@@ -1,6 +1,6 @@
 import { callAI, parseJsonWithFallback } from "./aiClient";
-import { integratorSystemPrompt, plannerSystemPrompt, reviewerSystemPrompt, workerSystemPrompt } from "./prompts";
-import { AIConfig, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, WorkerOutput } from "./types";
+import { coordinatorSystemPrompt, integratorSystemPrompt, plannerSystemPrompt, reviewerFixSystemPrompt, reviewerSystemPrompt, workerFixSystemPrompt, workerSystemPrompt } from "./prompts";
+import { AIConfig, FixBrief, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "./types";
 
 function normalizeTask(task: Partial<PlanTask>, index: number): PlanTask {
   const fallbackId = `task_${index + 1}`;
@@ -44,11 +44,47 @@ export async function reviewTask(config: AIConfig, task: PlanTask, workerOutput:
   };
 }
 
+export async function createFixBrief(
+  config: AIConfig,
+  requirement: string,
+  task: PlanTask,
+  attempt: number,
+  previousWorkerOutput: WorkerOutput,
+  review: ReviewOutput,
+): Promise<FixBrief> {
+  const fallback: FixBrief = { taskId: task.id, attempt, rootCauses: ["Invalid JSON"], requiredChanges: [], forbiddenChanges: [], qualityChecklist: [], messageToWorker: "Retry with structured fixes." };
+  const raw = await callAI(config, coordinatorSystemPrompt, `Original requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nPrevious worker output:\n${JSON.stringify(previousWorkerOutput, null, 2)}\n\nReviewer output:\n${JSON.stringify(review, null, 2)}\n\nReturn strict JSON only.`);
+  const parsed = parseJsonWithFallback(raw, fallback);
+  return { ...fallback, ...parsed, taskId: task.id, attempt };
+}
+
+export async function runWorkerFixTask(
+  config: AIConfig,
+  task: PlanTask,
+  requirement: string,
+  previousWorkerOutput: WorkerOutput,
+  review: ReviewOutput,
+  fixBrief: FixBrief,
+): Promise<WorkerOutput> {
+  const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback" };
+  const raw = await callAI(config, workerFixSystemPrompt, `Original requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nPrevious worker output:\n${JSON.stringify(previousWorkerOutput, null, 2)}\n\nReviewer feedback:\n${JSON.stringify(review, null, 2)}\n\nFixBrief:\n${JSON.stringify(fixBrief, null, 2)}\n\nReturn strict JSON only.`);
+  const parsed = parseJsonWithFallback(raw, fallback);
+  return { ...parsed, taskId: task.id };
+}
+
+export async function reviewFixTask(config: AIConfig, task: PlanTask, workerOutput: WorkerOutput, fixBrief: FixBrief): Promise<ReviewOutput> {
+  const fallback: ReviewOutput = { taskId: task.id, passed: false, issues: ["Invalid JSON"], suggestions: ["Retry review"], score: 0 };
+  const raw = await callAI(config, reviewerFixSystemPrompt, `Task:\n${JSON.stringify(task, null, 2)}\n\nWorker output:\n${JSON.stringify(workerOutput, null, 2)}\n\nFixBrief:\n${JSON.stringify(fixBrief, null, 2)}\n\nReturn strict JSON only.`);
+  const parsed = parseJsonWithFallback(raw, fallback);
+  return { ...parsed, taskId: task.id, score: Number.isFinite(parsed.score) ? parsed.score : 0 };
+}
+
 export async function integrateResults(
   config: AIConfig,
   plan: ProjectPlan,
   workerOutputs: WorkerOutput[],
   reviews: ReviewOutput[],
+  taskAttempts: TaskAttempt[] = [],
 ): Promise<IntegrationOutput> {
   const hasAllWorkers = plan.tasks.every((task) => workerOutputs.some((output) => output.taskId === task.id));
   const hasAllReviews = plan.tasks.every((task) => reviews.some((review) => review.taskId === task.id));
@@ -64,7 +100,7 @@ export async function integrateResults(
     nextSteps: [],
     testPlan: {},
   };
-  const raw = await callAI(config, integratorSystemPrompt, `Plan:\n${JSON.stringify(plan, null, 2)}\n\nWorker outputs:\n${JSON.stringify(workerOutputs, null, 2)}\n\nReviews:\n${JSON.stringify(reviews, null, 2)}\n\nReturn strict JSON only.`);
+  const raw = await callAI(config, integratorSystemPrompt, `Plan:\n${JSON.stringify(plan, null, 2)}\n\nWorker outputs:\n${JSON.stringify(workerOutputs, null, 2)}\n\nReviews:\n${JSON.stringify(reviews, null, 2)}\n\nTask attempts history:\n${JSON.stringify(taskAttempts, null, 2)}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback(raw, fallback);
   const normalizedFiles = Array.isArray(parsed.files)
     ? parsed.files

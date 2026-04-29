@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 import { NextResponse } from "next/server";
-import { IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
+import { CommunicationLogEntry, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
 
 type ExportFormat = "md" | "json" | "txt" | "zip";
 
@@ -10,6 +10,8 @@ interface ExportRequestBody {
   plan: ProjectPlan;
   workerOutputs: WorkerOutput[];
   reviews: ReviewOutput[];
+  taskAttempts?: TaskAttempt[];
+  communicationLog?: CommunicationLogEntry[];
 }
 
 function safeList(value: unknown): string[] {
@@ -28,7 +30,7 @@ function getTimestampParts(date: Date) {
 }
 
 function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
-  const { integration, plan, workerOutputs, reviews } = body;
+  const { integration, plan, workerOutputs, reviews, taskAttempts = [] } = body;
   const workerSection = workerOutputs
     .map((output) => {
       const filesSuggested = safeList(output.filesSuggested).join(", ") || "N/A";
@@ -44,7 +46,11 @@ function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
     })
     .join("\n");
 
-  return ["# Workflow Result", "", "## Project Name", integration.projectName || plan.projectName || "N/A", "", "## Status", integration.status || "in_progress", "", "## Summary", integration.summary || "N/A", "", "## Final Result", integration.finalResult || "N/A", "", "## Changelog", ...(safeList(integration.changelog).length ? safeList(integration.changelog).map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(safeList(integration.remainingProblems).length ? safeList(integration.remainingProblems).map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(safeList(integration.nextSteps).length ? safeList(integration.nextSteps).map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback", reviewSection || "- N/A"].join("\n");
+  const fixBriefSection = taskAttempts
+    .filter((attempt) => attempt.fixBrief)
+    .map((attempt) => `- Task ${attempt.fixBrief?.taskId} / Attempt ${attempt.attempt}: ${attempt.fixBrief?.messageToWorker || "N/A"}`)
+    .join("\n");
+  return ["# Workflow Result", "", "## Project Name", integration.projectName || plan.projectName || "N/A", "", "## Status", integration.status || "in_progress", "", "## Summary", integration.summary || "N/A", "", "## Final Result", integration.finalResult || "N/A", "", "## Final Task Statuses", ...(plan.tasks.map((task) => `- ${task.id}: ${reviews.find((review) => review.taskId === task.id)?.passed ? "passed" : "failed"}`)), "", "## Changelog", ...(safeList(integration.changelog).length ? safeList(integration.changelog).map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(safeList(integration.remainingProblems).length ? safeList(integration.remainingProblems).map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(safeList(integration.nextSteps).length ? safeList(integration.nextSteps).map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback Summary", reviewSection || "- N/A", "", "## Coordinator Fix Briefs", fixBriefSection || "- N/A"].join("\n");
 }
 
 function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
@@ -54,7 +60,7 @@ function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as ExportRequestBody;
-    const { format, integration, plan, workerOutputs, reviews } = body;
+    const { format, integration, plan, workerOutputs, reviews, taskAttempts = [], communicationLog = [] } = body;
 
     if (!["md", "json", "txt", "zip"].includes(format)) {
       return NextResponse.json({ error: "Invalid format" }, { status: 400 });
@@ -68,11 +74,11 @@ export async function POST(req: Request) {
 
     if (format === "json") {
       const fileName = `${filenameBase}.json`;
-      const payload = { integration, plan, workerOutputs, reviews };
+      const payload = { integration, plan, workerOutputs, reviews, taskAttempts, communicationLog };
       return new NextResponse(JSON.stringify(payload, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename=\"${fileName}\"` } });
     }
 
-    const textBody = { integration, plan, workerOutputs, reviews };
+    const textBody = { integration, plan, workerOutputs, reviews, taskAttempts, communicationLog };
     const markdownContent = buildMarkdownContent(textBody);
     const txtContent = buildTextContent(textBody);
 
@@ -84,10 +90,10 @@ export async function POST(req: Request) {
         }
       });
       zip.file("README.md", markdownContent);
-      zip.file("workflow-data.json", JSON.stringify({ integration, plan, workerOutputs, reviews }, null, 2));
+      zip.file("workflow-data.json", JSON.stringify({ integration, plan, workerOutputs, reviews, taskAttempts, communicationLog }, null, 2));
       zip.file(`${filenameBase}.md`, markdownContent);
       zip.file(`${filenameBase}.txt`, txtContent);
-      zip.file(`${filenameBase}.json`, JSON.stringify({ integration, plan, workerOutputs, reviews }, null, 2));
+      zip.file(`${filenameBase}.json`, JSON.stringify({ integration, plan, workerOutputs, reviews, taskAttempts, communicationLog }, null, 2));
       const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
       return new NextResponse(zipBuffer, {
         headers: {
