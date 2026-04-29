@@ -5,6 +5,8 @@ import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPl
 
 type TaskStatus = "idle" | "waiting_dependencies" | "done" | "reviewed";
 type ExportFormat = "md" | "json" | "txt" | "zip";
+type AppLogLevel = "info" | "warn" | "error";
+type AppLogEntry = { timestamp: string; level: AppLogLevel; message: string; detail?: unknown };
 
 function normalizeTaskKey(taskId: unknown): string {
   return String(taskId ?? "").trim();
@@ -27,6 +29,7 @@ export default function HomePage() {
   const [useCustomWorkerModel, setUseCustomWorkerModel] = useState<boolean>(false);
   const [customWorkerModel, setCustomWorkerModel] = useState<string>("");
   const [progress, setProgress] = useState({ total: 0, done: 0, phase: "idle" });
+  const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
 
   const taskStatus = useMemo(() => {
     const map: Record<string, TaskStatus> = {};
@@ -56,8 +59,28 @@ export default function HomePage() {
       .map((task) => task.label);
   }, [plan, workerOutputs, reviews]);
 
+
+  function appendLog(level: AppLogLevel, message: string, detail?: unknown) {
+    setAppLogs((prev) => [...prev, { timestamp: new Date().toISOString(), level, message, detail }]);
+  }
+
+  function downloadDiagnosticLog() {
+    const payload = { generatedAt: new Date().toISOString(), requirement, progress, errorMessage, communicationLog, appLogs };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `ai-diagnostic-log-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+    appendLog("info", "用户下载诊断日志");
+  }
+
   async function refreshModels() {
     setModelStatus("正在刷新模型...");
+    appendLog("info", "开始刷新模型列表");
     setErrorMessage("");
     try {
       const resp = await fetch("/api/models", {
@@ -73,9 +96,11 @@ export default function HomePage() {
         setConfig({ ...config, model: modelIds[0] });
       }
       setModelStatus("刷新成功");
+      appendLog("info", "模型列表刷新成功", { count: modelIds.length });
     } catch (error) {
       setModelStatus(`刷新失败：${(error as Error).message}`);
       setErrorMessage((error as Error).message);
+      appendLog("error", "模型列表刷新失败", (error as Error).message);
     }
   }
 
@@ -106,6 +131,7 @@ export default function HomePage() {
 
         const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: Boolean(currentReview?.passed) };
         if (currentReview.passed) {
+          appendLog("info", `任务 ${taskKey} 在第 ${attempt} 轮评审通过`);
           attempts.push(attemptItem);
           break;
         }
@@ -135,6 +161,7 @@ export default function HomePage() {
       };
       attempts.push({ attempt: attempts.length + 1, workerOutput: currentOutput, review: currentReview, passed: false });
       setErrorMessage((prev) => (prev ? `${prev}\n${task.id}: ${message}` : `${task.id}: ${message}`));
+      appendLog("error", `任务 ${taskKey} 执行失败`, message);
     }
 
     if (!currentOutput || !currentReview) throw new Error(`任务 ${taskKey} 没有产生有效结果`);
@@ -254,6 +281,7 @@ export default function HomePage() {
       setReviews({});
       setTaskAttempts({});
       setCommunicationLog([]);
+      setAppLogs([]);
       setIntegration(null);
       setProgress({ total: 1, done: 1, phase: "planned" });
 
@@ -362,6 +390,7 @@ export default function HomePage() {
         </div>
       ) : null}
       <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+        <button onClick={downloadDiagnosticLog} disabled={(communicationLog.length === 0 && appLogs.length === 0) || !!loading}>下载诊断日志给 AI 分析</button>
         <button onClick={() => downloadExport("md")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 Markdown</button>
         <button onClick={() => downloadExport("json")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 JSON</button>
         <button onClick={() => downloadExport("txt")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 TXT</button>
