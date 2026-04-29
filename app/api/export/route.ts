@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import JSZip from "jszip";
-import { IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput, WorkflowSettings } from "@/lib/types";
+import { IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
 
 type ExportFormat = "md" | "json" | "txt" | "zip";
 
@@ -43,7 +43,7 @@ async function buildZipContent(body: Omit<ExportRequestBody, "format">) {
 
   zip.file("final-result.md", markdown);
   zip.file("final-result.txt", text);
-  zip.file("workflow-data.json", JSON.stringify({ ...body, settings: body.settings ?? { retryCount: 1, maxTasks: 5, maxWorkers: 3 } }, null, 2));
+  zip.file("workflow-data.json", JSON.stringify(body, null, 2));
   zip.file("plan.json", JSON.stringify(body.plan, null, 2));
   zip.file("worker-outputs.json", JSON.stringify(body.workerOutputs, null, 2));
   zip.file("reviews.json", JSON.stringify(body.reviews, null, 2));
@@ -80,11 +80,11 @@ export async function POST(req: Request) {
 
     if (format === "json") {
       const fileName = `${filenameBase}.json`;
-      const payload = { integration, plan, workerOutputs, reviews, settings: body.settings ?? { retryCount: 1, maxTasks: 5, maxWorkers: 3 } };
+      const payload = { integration, plan, workerOutputs, reviews };
       return new NextResponse(JSON.stringify(payload, null, 2), { headers: { "Content-Type": "application/json", "Content-Disposition": `attachment; filename=\"${fileName}\"` } });
     }
 
-    const textBody = { integration, plan, workerOutputs, reviews, settings: body.settings ?? { retryCount: 1, maxTasks: 5, maxWorkers: 3 } };
+    const textBody = { integration, plan, workerOutputs, reviews };
     if (format === "zip") {
       const zipData = await buildZipContent(textBody);
       return new NextResponse(zipData, {
