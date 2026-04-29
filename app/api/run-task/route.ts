@@ -1,10 +1,15 @@
 import { NextResponse } from "next/server";
+import { validateRunTaskRequest } from "@/lib/validators";
 import { runWorkerFixTask, runWorkerTask } from "@/lib/workflow";
 
 export async function POST(req: Request) {
   try {
-    const { config, task, requirement, attempt, previousOutput, previousReview, fixBrief } = await req.json();
-    const output = attempt > 1 && previousOutput && previousReview && fixBrief
+    const validated = validateRunTaskRequest(await req.json());
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error, code: validated.code }, { status: 400 });
+    }
+    const { config, task, requirement, attempt, previousOutput, previousReview, fixBrief } = validated.data;
+    const output = attempt && attempt > 1 && previousOutput && previousReview && fixBrief
       ? await runWorkerFixTask(config, task, requirement, previousOutput, previousReview, fixBrief)
       : await runWorkerTask(config, task, requirement);
     return NextResponse.json({ output });

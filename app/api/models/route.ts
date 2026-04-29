@@ -1,9 +1,5 @@
 import { NextResponse } from "next/server";
-
-interface ModelRequestBody {
-  baseURL: string;
-  apiKey: string;
-}
+import { validateModelsRequest } from "@/lib/validators";
 
 const summarizeResponseShape = (payload: unknown): string => {
   if (!payload || typeof payload !== "object") {
@@ -74,11 +70,12 @@ const extractModelIds = (payload: unknown): string[] => {
 
 export async function POST(req: Request) {
   try {
-    const { baseURL, apiKey } = (await req.json()) as ModelRequestBody;
-    if (!baseURL || !apiKey) {
-      return NextResponse.json({ error: "baseURL and apiKey are required" }, { status: 400 });
+    const validated = validateModelsRequest(await req.json());
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error, code: validated.code }, { status: 400 });
     }
 
+    const { baseURL, apiKey } = validated.data;
     const normalizedBaseURL = baseURL.replace(/\/+$/, "");
     const resp = await fetch(`${normalizedBaseURL}/models`, {
       method: "GET",
@@ -101,6 +98,7 @@ export async function POST(req: Request) {
       console.warn(`[models API] successful response but no models parsed, shape=${shapeSummary}`);
       return NextResponse.json({
         error: "响应结构不兼容：请求成功但未解析到模型列表",
+        code: "INVALID_REQUEST",
         models: [],
         responseShape: shapeSummary,
       }, { status: 422 });
