@@ -1,6 +1,7 @@
 import JSZip from "jszip";
 import { NextResponse } from "next/server";
 import { CommunicationLogEntry, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
+import { validateExportRequest } from "@/lib/validators";
 
 type ExportFormat = "md" | "json" | "txt" | "zip";
 
@@ -117,11 +118,14 @@ function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
 
 export async function POST(req: Request) {
   try {
-    const rawBody: unknown = await req.json();
-    const validated = validateExportRequestBody(rawBody);
+    const baseValidated = validateExportRequest(await req.json());
+    if (!baseValidated.ok) {
+      return NextResponse.json({ error: baseValidated.error, code: baseValidated.code }, { status: 400 });
+    }
 
+    const validated = validateExportRequestBody(baseValidated.data);
     if (!validated.ok) {
-      return NextResponse.json({ error: validated.error }, { status: 400 });
+      return NextResponse.json({ error: validated.error, code: "INVALID_REQUEST" }, { status: 400 });
     }
 
     const { format, integration, plan, workerOutputs, reviews, taskAttempts, communicationLog } = validated.data;
