@@ -141,6 +141,13 @@ export default function HomePage() {
         const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
         if (!runResp.ok || !runData.output) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
         currentOutput = runData.output;
+        if (attempt > 1) {
+          appendLog("info", `任务 ${taskKey} 修复轮 ${attempt} 输出`, {
+            fixedIssues: currentOutput.fixedIssues || [],
+            remainingRisks: currentOutput.remainingRisks || [],
+            changedFiles: currentOutput.changedFiles || [],
+          });
+        }
         setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
 
         const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
@@ -181,6 +188,9 @@ export default function HomePage() {
         filesSuggested: [],
         risks: [message],
         notes: "Worker 执行失败，已生成兜底输出以避免流程卡住。",
+        fixedIssues: [],
+        remainingRisks: [message],
+        changedFiles: [],
       };
       currentReview = currentReview ?? {
         taskId: taskKey,

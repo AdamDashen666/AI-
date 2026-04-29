@@ -31,7 +31,7 @@ export async function createPlan(config: AIConfig, requirement: string, maxTasks
 }
 
 export async function runWorkerTask(config: AIConfig, task: PlanTask, requirement: string): Promise<WorkerOutput> {
-  const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback" };
+  const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback", fixedIssues: [], remainingRisks: ["Invalid JSON"], changedFiles: [] };
   const raw = await callAI(config, workerSystemPrompt, `Project requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback(raw, fallback);
   return { ...parsed, taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : task.id };
@@ -70,10 +70,16 @@ export async function runWorkerFixTask(
   review: ReviewOutput,
   fixBrief: FixBrief,
 ): Promise<WorkerOutput> {
-  const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback" };
+  const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback", fixedIssues: [], remainingRisks: ["Invalid JSON"], changedFiles: [] };
   const raw = await callAI(config, workerFixSystemPrompt, `Original requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nPrevious worker output:\n${JSON.stringify(previousWorkerOutput, null, 2)}\n\nReviewer feedback:\n${JSON.stringify(review, null, 2)}\n\nFixBrief:\n${JSON.stringify(fixBrief, null, 2)}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback(raw, fallback);
-  return { ...parsed, taskId: task.id };
+  return {
+    ...parsed,
+    taskId: task.id,
+    fixedIssues: Array.isArray(parsed.fixedIssues) ? parsed.fixedIssues.map(String) : [],
+    remainingRisks: Array.isArray(parsed.remainingRisks) ? parsed.remainingRisks.map(String) : [],
+    changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.map(String) : [],
+  };
 }
 
 export async function reviewFixTask(config: AIConfig, task: PlanTask, workerOutput: WorkerOutput, fixBrief: FixBrief): Promise<ReviewOutput> {
