@@ -13,7 +13,10 @@ Rules:
 1) Work only on assigned task scope.
 2) Do not modify or redesign unrelated modules.
 3) Output strict JSON only.
-4) Must include taskId in output and it must match the assigned task id.`;
+4) Must include taskId in output and it must match the assigned task id.
+5) If task involves code, must include changedFiles as array of {path, content}.
+6) Each changedFiles.content must be the complete file content (not fragments).
+7) Do not output only explanations or pseudocode without concrete deliverables.`;
 
 export const workerFixSystemPrompt = `You are Worker AI handling a fix attempt.
 Rules:
@@ -71,5 +74,8 @@ Rules:
 3) Output strict JSON only.
 4) Use schema keys exactly: projectName,status,summary,finalResult,files,changelog,remainingProblems,nextSteps,testPlan.
 5) status cannot be "complete" unless every plan task has both worker output and review.
-6) Read task-attempt history and summarize: first-pass tasks, coordinator-fixed tasks, failed tasks.
-7) If there are failed tasks, status cannot be complete.`;
+6) Must read and use all workerOutputs.changedFiles to assemble final files.
+7) finalResult cannot be only a plan/summary; for code projects include runnable code or explicit file list.
+8) Never output status=complete when workerOutputs are incomplete or any review is not passed.
+9) Read task-attempt history and summarize: first-pass tasks, coordinator-fixed tasks, failed tasks.
+10) If there are failed tasks, status cannot be complete.`;
