@@ -38,20 +38,55 @@ function migrateLegacyWorkerOutput(parsed: Record<string, unknown>, task: PlanTa
 }
 
 export function normalizeTask(task: Partial<PlanTask> & { taskId?: string | number; taskName?: string }, index: number): PlanTask {
-  const fallbackId = `task_${index + 1}`;
+  const fallbackId = `task-${String(index + 1).padStart(3, "0")}`;
+  const allowedWorkerTypes: WorkerType[] = ["ui", "backend", "research", "code", "test", "integration"];
   const rawId = task.id ?? task.taskId;
   const normalizedId = typeof rawId === "number" ? String(rawId) : rawId;
+  const normalizedName = typeof task.name === "string" && task.name.trim()
+    ? task.name.trim()
+    : typeof task.taskName === "string" && task.taskName.trim()
+      ? task.taskName.trim()
+      : `Task ${index + 1}`;
+  const rawDescription = typeof task.description === "string" ? task.description : "";
+  const rawWorkerType = typeof task.workerType === "string" ? task.workerType : "code";
+  const normalizedWorkerType = allowedWorkerTypes.includes(rawWorkerType as WorkerType)
+    ? (rawWorkerType as WorkerType)
+    : "code";
   return {
     id: typeof normalizedId === "string" && normalizedId.trim() ? normalizedId.trim() : fallbackId,
-    name: typeof task.name === "string" && task.name.trim()
-      ? task.name.trim()
-      : typeof task.taskName === "string" && task.taskName.trim()
-        ? task.taskName.trim()
-        : `Task ${index + 1}`,
-    description: typeof task.description === "string" ? task.description : "",
-    workerType: (task.workerType ?? "code") as PlanTask["workerType"],
+    name: normalizedName,
+    description: rawDescription || normalizedName,
+    workerType: normalizedWorkerType,
     dependencies: Array.isArray(task.dependencies) ? task.dependencies.map((dep) => String(dep)) : [],
   };
+}
+
+function normalizePlannerOutput(rawPlan: unknown, fallback: ProjectPlan, maxTasks: number): ProjectPlan {
+  const safeMaxTasks = Math.max(1, Math.floor(maxTasks));
+  const source = (typeof rawPlan === "object" && rawPlan !== null) ? rawPlan as Record<string, unknown> : {};
+  const isTopLevelArray = Array.isArray(rawPlan);
+  const numericTasksFromObject = Object.keys(source)
+    .filter((key) => /^\d+$/.test(key))
+    .sort((a, b) => Number(a) - Number(b))
+    .map((key) => source[key]);
+  let candidateTasks: unknown[] = [];
+  if (isTopLevelArray) {
+    candidateTasks = rawPlan as unknown[];
+  } else if (Array.isArray(source.tasks) && source.tasks.length > 0) {
+    candidateTasks = source.tasks;
+  } else if (numericTasksFromObject.length > 0) {
+    candidateTasks = numericTasksFromObject;
+  } else if (Array.isArray(source.tasks)) {
+    candidateTasks = source.tasks;
+  }
+  const tasks = candidateTasks.slice(0, safeMaxTasks).map((task, index) => normalizeTask((task ?? {}) as Partial<PlanTask>, index));
+  const projectName = typeof source.projectName === "string" && source.projectName.trim()
+    ? source.projectName.trim()
+    : fallback.projectName;
+  const summary = typeof source.summary === "string"
+    ? source.summary
+    : fallback.summary;
+  return { projectName, summary, tasks };
 }
 
 export function getIntegrationBlockers(
@@ -82,12 +117,14 @@ export async function createPlan(config: AIConfig, requirement: string, maxTasks
   const raw = await callAI(
     config,
     plannerSystemPrompt,
-    `Requirement:\n${requirement}\n\nConstraints:\n- Max task count: ${maxTasks}\n- Keep each task clear, independent, and executable\n- If project scope is small, you may return fewer than ${maxTasks} tasks\n- Respect the worker count limits by workerType when assigning tasks\nWorker count limits:\n${quotaText}\n\nReturn strict JSON only.`,
+    `Requirement:\n${requirement}\n\nConstraints:\n- Max task count: ${maxTasks}\n- Keep each task clear, independent, and executable\n- If project scope is small, you may return fewer than ${maxTasks} tasks\n- Respect the worker count limits by workerType when assigning tasks\nWorker count limits:\n${quotaText}\n\nYou MUST return a strict JSON object (NOT an array) with this exact structure:\n{\n  "projectName": "...",\n  "summary": "...",\n  "tasks": [\n    {\n      "id": "task-001",\n      "name": "Task 1",\n      "description": "...",\n      "workerType": "code",\n      "dependencies": []\n    }\n  ]\n}\n\nReturn strict JSON only.`,
   );
-  const plan = parseJsonWithFallback(raw, fallback);
-  const rawTasks = Array.isArray(plan.tasks) ? plan.tasks.slice(0, maxTasks) : [];
-  const tasks = rawTasks.map((task, index) => normalizeTask(task, index));
-  return { ...plan, tasks };
+  const parsedPlan = parseJsonWithFallback<unknown>(raw, fallback as unknown);
+  const normalizedPlan = normalizePlannerOutput(parsedPlan, fallback, maxTasks);
+  if (normalizedPlan.tasks.length === 0) {
+    throw new Error("计划生成失败：AI 没有返回任何任务，请重试或换模型。");
+  }
+  return normalizedPlan;
 }
 
 export async function runWorkerTask(config: AIConfig, task: PlanTask, requirement: string, dependencyOutputs?: Record<string, unknown>): Promise<WorkerOutput> {
