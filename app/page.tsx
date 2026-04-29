@@ -73,31 +73,51 @@ export default function HomePage() {
     const attempts: TaskAttempt[] = [];
     let currentOutput: WorkerOutput | null = null;
     let currentReview: ReviewOutput | null = null;
-    for (let attempt = 1; attempt <= maxReviewFixAttempts; attempt += 1) {
-      const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: currentOutput, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
-      const runData: { output: WorkerOutput; error?: string } = await runResp.json();
-      if (!runResp.ok) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
-      currentOutput = runData.output;
-      setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
+    try {
+      for (let attempt = 1; attempt <= maxReviewFixAttempts; attempt += 1) {
+        const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: currentOutput, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+        const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
+        if (!runResp.ok || !runData.output) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
+        currentOutput = runData.output;
+        setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
 
-      const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
-      const reviewData: { review: ReviewOutput; error?: string } = await reviewResp.json();
-      if (!reviewResp.ok) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
-      currentReview = reviewData.review;
-      setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
+        const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+        const reviewData: { review?: ReviewOutput; error?: string } = await reviewResp.json().catch(() => ({}));
+        if (!reviewResp.ok || !reviewData.review) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
+        currentReview = reviewData.review;
+        setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
 
-      const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: Boolean(currentReview?.passed) };
-      if (currentReview.passed) {
+        const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: Boolean(currentReview?.passed) };
+        if (currentReview.passed) {
+          attempts.push(attemptItem);
+          break;
+        }
+        const coordinatorResp = await fetch("/api/fix-brief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, requirement, task, attempt, previousOutput: currentOutput, review: currentReview }) });
+        const coordinatorData = await coordinatorResp.json().catch(() => ({}));
+        if (!coordinatorResp.ok || !coordinatorData.fixBrief) throw new Error(coordinatorData.error || `协调失败: ${coordinatorResp.status}`);
+        const fixBrief: FixBrief = coordinatorData.fixBrief;
+        attemptItem.fixBrief = fixBrief;
+        setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> }]);
         attempts.push(attemptItem);
-        break;
       }
-      const coordinatorResp = await fetch("/api/fix-brief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, requirement, task, attempt, previousOutput: currentOutput, review: currentReview }) });
-      const coordinatorData = await coordinatorResp.json();
-      if (!coordinatorResp.ok) throw new Error(coordinatorData.error || `协调失败: ${coordinatorResp.status}`);
-      const fixBrief: FixBrief = coordinatorData.fixBrief;
-      attemptItem.fixBrief = fixBrief;
-      setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> }]);
-      attempts.push(attemptItem);
+    } catch (error) {
+      const message = (error as Error).message || "未知错误";
+      currentOutput = currentOutput ?? {
+        taskId: task.id,
+        result: `任务失败：${message}`,
+        filesSuggested: [],
+        risks: [message],
+        notes: "Worker 执行失败，已生成兜底输出以避免流程卡住。",
+      };
+      currentReview = currentReview ?? {
+        taskId: task.id,
+        passed: false,
+        issues: [message],
+        suggestions: ["检查 API 配置、模型可用性与返回 JSON 格式后重试。"],
+        score: 0,
+      };
+      attempts.push({ attempt: attempts.length + 1, workerOutput: currentOutput, review: currentReview, passed: false });
+      setErrorMessage((prev) => (prev ? `${prev}\n${task.id}: ${message}` : `${task.id}: ${message}`));
     }
 
     if (!currentOutput || !currentReview) throw new Error(`任务 ${task.id} 没有产生有效结果`);
