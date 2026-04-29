@@ -11,7 +11,7 @@ export async function POST(req: Request) {
     }
     const { config, task, requirement, attempt, previousOutput, previousReview, fixBrief, dependencyOutputs, previousOutputContext } = validated.data;
     const output = attempt && attempt > 1 && previousOutput && previousReview && fixBrief
-      ? await runWorkerFixTask(config, task, requirement, previousOutput as unknown as WorkerOutput, previousReview, fixBrief)
+      ? await runWorkerFixTask(config, task, requirement, previousOutput as unknown as WorkerOutput, previousReview, fixBrief, dependencyOutputs ?? previousOutputContext)
       : await runWorkerTask(config, task, requirement, dependencyOutputs ?? previousOutputContext);
     return NextResponse.json({ output });
   } catch (error) {

@@ -154,9 +154,7 @@ export default function HomePage() {
         const previousOutputPayload = attempt > 1
           ? normalizePreviousOutput(currentOutput)
           : {};
-        const dependencyOutputsPayload = attempt === 1
-          ? normalizePreviousOutput(dependencyOutputMap)
-          : {};
+        const dependencyOutputsPayload = normalizePreviousOutput(dependencyOutputMap);
         appendCommunicationLog({ taskId: taskKey, attempt, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { previousOutput: previousOutputPayload, dependencyOutputs: dependencyOutputsPayload } });
         const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: previousOutputPayload, dependencyOutputs: dependencyOutputsPayload, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
         const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
@@ -316,11 +314,13 @@ export default function HomePage() {
               score: 0,
             };
             const blockedOutput: WorkerOutput = { taskId: nextTaskId, result: "blocked", filesSuggested: [], risks: [`依赖未通过：${invalidDeps.join(", ")}`], notes: "任务被阻塞，未执行 worker。", fixedIssues: [], remainingRisks: [`依赖未通过：${invalidDeps.join(", ")}`], changedFiles: [] };
+            const blockedAttempt: TaskAttempt = { attempt: 1, workerOutput: blockedOutput, review: blockedReview, passed: false };
             outputStore[nextTaskId] = blockedOutput;
             reviewStore[nextTaskId] = blockedReview;
             setWorkerOutputs((prev) => ({ ...prev, [nextTaskId]: blockedOutput }));
             setReviews((prev) => ({ ...prev, [nextTaskId]: blockedReview }));
-            setTaskAttempts((prev) => ({ ...prev, [nextTaskId]: [...(prev[nextTaskId] || []), { attempt: 1, workerOutput: blockedOutput, review: blockedReview, passed: false }] }));
+            allAttempts.push(blockedAttempt);
+            setTaskAttempts((prev) => ({ ...prev, [nextTaskId]: [...(prev[nextTaskId] || []), blockedAttempt] }));
             appendCommunicationLog({ taskId: nextTaskId, attempt: 1, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { status: "blocked", dependencies: invalidDeps } });
             setProgress((prev) => ({ ...prev, phase: "blocked" }));
             scheduledTaskIds.add(nextTaskId);
@@ -377,7 +377,8 @@ export default function HomePage() {
       setErrorMessage((error as Error).message);
       appendCommunicationLog({ taskId: "final", attempt: 1, from: "system", to: "user", timestamp: new Date().toISOString(), payload: { event: "integration_to_final", status: "failed", error: (error as Error).message } });
       appendLog("error", "最终组装失败", detail);
-      setProgress((prev) => ({ ...prev, phase: "failed" }));
+      const hasBlockedTasks = Object.values(outputStore).some((output) => output?.result === "blocked");
+      setProgress((prev) => ({ ...prev, phase: hasBlockedTasks ? "blocked" : "failed" }));
     } finally {
       setLoading("");
     }
