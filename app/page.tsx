@@ -87,8 +87,12 @@ export default function HomePage() {
     setAppLogs((prev) => [...prev, { timestamp: new Date().toISOString(), level, message, detail }]);
   }
 
+  function appendCommunicationLog(entry: CommunicationLogEntry) {
+    setCommunicationLog((prev) => [...prev, entry]);
+  }
+
   function downloadDiagnosticLog() {
-    const payload = { generatedAt: new Date().toISOString(), requirement, progress, errorMessage, communicationLog, appLogs, plan, workerOutputs, reviews, integration, taskAttempts };
+    const payload = { generatedAt: new Date().toISOString(), requirement, config: { ...config, apiKey: config.apiKey ? "***masked***" : "" }, settings: { maxConcurrentWorkers, minimumReviewScore, workerRoleCounts, useCustomWorkerModel, customWorkerModel }, progress, errorMessage, communicationLog, appLogs, plan, workerOutputs, reviews, integration, taskAttempts };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -151,13 +155,13 @@ export default function HomePage() {
             changedFiles: currentOutput.changedFiles || [],
           });
         }
-        setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> });
 
         const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
         const reviewData: { review?: ReviewOutput; error?: string } = await reviewResp.json().catch(() => ({}));
         if (!reviewResp.ok || !reviewData.review) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
         currentReview = reviewData.review;
-        setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
 
         const passedByScore = Number(currentReview.score) >= minimumReviewScore;
         const hasBlockingIssues = Array.isArray(currentReview.issues) && currentReview.issues.length > 0;
@@ -181,7 +185,7 @@ export default function HomePage() {
         if (!coordinatorResp.ok || !coordinatorData.fixBrief) throw new Error(coordinatorData.error || `协调失败: ${coordinatorResp.status}`);
         const fixBrief: FixBrief = coordinatorData.fixBrief;
         attemptItem.fixBrief = fixBrief;
-        setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> }]);
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> });
         attempts.push(attemptItem);
       }
     } catch (error) {
