@@ -65,7 +65,7 @@ export default function HomePage() {
   }
 
   function downloadDiagnosticLog() {
-    const payload = { generatedAt: new Date().toISOString(), requirement, progress, errorMessage, communicationLog, appLogs };
+    const payload = { generatedAt: new Date().toISOString(), requirement, progress, errorMessage, communicationLog, appLogs, plan, workerOutputs, reviews, integration, taskAttempts };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
     const url = window.URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -276,18 +276,20 @@ export default function HomePage() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || `计划生成失败: ${r.status}`);
 
+      appendLog("info", "计划生成成功", { taskCount: d.plan?.tasks?.length ?? 0 });
       setPlan(d.plan);
       setWorkerOutputs({});
       setReviews({});
       setTaskAttempts({});
       setCommunicationLog([]);
-      setAppLogs([]);
       setIntegration(null);
       setProgress({ total: 1, done: 1, phase: "planned" });
 
       await executeTasksAndIntegrate(d.plan);
+      appendLog("info", "工作流执行完成");
     } catch (error) {
       setErrorMessage((error as Error).message);
+      appendLog("error", "生成计划或执行流程失败", (error as Error).message);
       setLoading("");
     }
   }
@@ -377,6 +379,8 @@ export default function HomePage() {
         </details>
       </div>;
       })}
+      <h3>运行日志（实时）</h3>
+      <pre>{JSON.stringify(appLogs, null, 2)}</pre>
       <h3>Agent Communication Log</h3>
       <pre>{JSON.stringify(communicationLog, null, 2)}</pre>
       <h3>Worker 输出</h3>
@@ -390,7 +394,7 @@ export default function HomePage() {
         </div>
       ) : null}
       <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <button onClick={downloadDiagnosticLog} disabled={(communicationLog.length === 0 && appLogs.length === 0) || !!loading}>下载诊断日志给 AI 分析</button>
+        <button onClick={downloadDiagnosticLog} disabled={!!loading}>下载诊断日志（随时）</button>
         <button onClick={() => downloadExport("md")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 Markdown</button>
         <button onClick={() => downloadExport("json")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 JSON</button>
         <button onClick={() => downloadExport("txt")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 TXT</button>
