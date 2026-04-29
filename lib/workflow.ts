@@ -90,9 +90,12 @@ export async function createPlan(config: AIConfig, requirement: string, maxTasks
   return { ...plan, tasks };
 }
 
-export async function runWorkerTask(config: AIConfig, task: PlanTask, requirement: string): Promise<WorkerOutput> {
+export async function runWorkerTask(config: AIConfig, task: PlanTask, requirement: string, dependencyOutputs?: Record<string, unknown>): Promise<WorkerOutput> {
   const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback", fixedIssues: [], remainingRisks: ["Invalid JSON"], changedFiles: [] };
-  const raw = await callAI(config, workerSystemPrompt, `Project requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nReturn strict JSON only.`);
+  const dependencyContext = dependencyOutputs && Object.keys(dependencyOutputs).length > 0
+    ? JSON.stringify(dependencyOutputs, null, 2)
+    : "{}";
+  const raw = await callAI(config, workerSystemPrompt, `Project requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nDependency task outputs (read-only context, not fix-attempt previousOutput):\n${dependencyContext}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback<Record<string, unknown>>(raw, fallback as unknown as Record<string, unknown>);
   return migrateLegacyWorkerOutput(parsed, task);
 }
