@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
 import { getIntegrationBlockers } from "@/lib/workflow";
 
-type TaskStatus = "idle" | "waiting_dependencies" | "done" | "reviewed";
+type TaskStatus = "idle" | "waiting_dependencies" | "done" | "passed" | "failed" | "blocked";
 type ProgressPhase = "idle" | "planning" | "planned" | "running" | "integrating" | "done";
 type ExportFormat = "md" | "json" | "txt" | "zip";
 type AppLogLevel = "info" | "warn" | "error";
@@ -24,6 +24,10 @@ function getFriendlyErrorMessage(rawMessage: string): string {
 
 function normalizeTaskKey(taskId: unknown): string {
   return String(taskId ?? "").trim();
+}
+
+function normalizePreviousOutput(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : {};
 }
 
 export default function HomePage() {
@@ -61,7 +65,9 @@ export default function HomePage() {
       const taskKey = normalizeTaskKey(t.id);
       const dependencies = Array.isArray(t.dependencies) ? t.dependencies.map((dep) => normalizeTaskKey(dep)) : [];
       if (reviews[taskKey]) {
-        map[taskKey] = "reviewed";
+        map[taskKey] = reviews[taskKey].passed ? "passed" : "failed";
+      } else if (taskAttempts[taskKey]?.some((attempt) => attempt.review?.passed === false) && dependencies.length > 0 && dependencies.some((dep) => !reviews[dep]?.passed)) {
+        map[taskKey] = "blocked";
       } else if (workerOutputs[taskKey]) {
         map[taskKey] = "done";
       } else if (dependencies.length > 0 && dependencies.some((dep) => !reviewedTaskIds.has(dep))) {
@@ -71,7 +77,7 @@ export default function HomePage() {
       }
     });
     return map;
-  }, [plan, workerOutputs, reviews]);
+  }, [plan, workerOutputs, reviews, taskAttempts]);
 
   const progressPercent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
   const missingTasks = useMemo(() => {
@@ -136,6 +142,7 @@ export default function HomePage() {
     activeConfig: AIConfig,
     outputStore: Record<string, WorkerOutput>,
     reviewStore: Record<string, ReviewOutput>,
+    dependencyOutputMap: Record<string, WorkerOutput>,
   ): Promise<TaskAttempt[]> {
     const taskKey = normalizeTaskKey(task.id);
     const maxReviewFixAttempts = 3;
@@ -144,7 +151,11 @@ export default function HomePage() {
     let currentReview: ReviewOutput | null = null;
     try {
       for (let attempt = 1; attempt <= maxReviewFixAttempts; attempt += 1) {
-        const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: currentOutput, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+        const previousOutputPayload = attempt > 1
+          ? normalizePreviousOutput(currentOutput)
+          : normalizePreviousOutput(dependencyOutputMap);
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { previousOutput: previousOutputPayload } });
+        const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: previousOutputPayload, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
         const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
         if (!runResp.ok || !runData.output) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
         currentOutput = runData.output;
@@ -217,6 +228,8 @@ export default function HomePage() {
         score: 0,
       };
       attempts.push({ attempt: attempts.length + 1, workerOutput: currentOutput, review: currentReview, passed: false });
+      appendCommunicationLog({ taskId: taskKey, attempt: attempts.length, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> });
+      appendCommunicationLog({ taskId: taskKey, attempt: attempts.length, from: "reviewer", to: "worker", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
       setErrorMessage((prev) => (prev ? `${prev}\n${task.id}: ${message}` : `${task.id}: ${message}`));
       appendLog("error", `任务 ${taskKey} 执行失败`, detail);
     }
@@ -289,11 +302,34 @@ export default function HomePage() {
           }
           const task = taskMap.get(nextTaskId);
           if (!task) throw new Error(`任务不存在：${nextTaskId}`);
+          const deps = dependencyMap.get(nextTaskId) || [];
+          const invalidDeps = deps.filter((dep) => !reviewStore[dep]?.passed);
+          if (invalidDeps.length > 0) {
+            const blockedReview: ReviewOutput = {
+              taskId: nextTaskId,
+              passed: false,
+              issues: [`依赖任务未通过：${invalidDeps.join(", ")}`],
+              suggestions: ["请先修复依赖任务后再执行当前任务。"],
+              score: 0,
+            };
+            reviewStore[nextTaskId] = blockedReview;
+            setReviews((prev) => ({ ...prev, [nextTaskId]: blockedReview }));
+            setTaskAttempts((prev) => ({ ...prev, [nextTaskId]: [...(prev[nextTaskId] || []), { attempt: 1, workerOutput: { taskId: nextTaskId, result: "blocked", filesSuggested: [], risks: [`依赖未通过：${invalidDeps.join(", ")}`], notes: "任务被阻塞，未执行 worker。", fixedIssues: [], remainingRisks: [`依赖未通过：${invalidDeps.join(", ")}`], changedFiles: [] }, review: blockedReview, passed: false }] }));
+            appendCommunicationLog({ taskId: nextTaskId, attempt: 1, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { status: "blocked", dependencies: invalidDeps } });
+            scheduledTaskIds.add(nextTaskId);
+            markTaskCompleted(nextTaskId);
+            continue;
+          }
           scheduledTaskIds.add(nextTaskId);
-          const attempts = await executeOneTask(task, activeConfig, outputStore, reviewStore);
+          const dependencyOutputMap = deps.reduce<Record<string, WorkerOutput>>((acc, dep) => {
+            if (outputStore[dep]) acc[dep] = outputStore[dep];
+            return acc;
+          }, {});
+          const attempts = await executeOneTask(task, activeConfig, outputStore, reviewStore, dependencyOutputMap);
           markTaskCompleted(nextTaskId);
           allAttempts.push(...attempts);
-          setProgress((prev) => ({ ...prev, done: prev.done + 1 }));
+          const latestReview = attempts[attempts.length - 1]?.review;
+          setProgress((prev) => ({ ...prev, done: prev.done + (latestReview?.passed ? 1 : 0) }));
         }
       });
       await Promise.all(workers);
@@ -311,6 +347,7 @@ export default function HomePage() {
       }
 
       setLoading("integrating");
+      appendCommunicationLog({ taskId: "integration", attempt: 1, from: "worker", to: "system", timestamp: new Date().toISOString(), payload: { event: "workers_to_integration", taskCount: Object.keys(outputStore).length } });
       setProgress((prev) => ({ ...prev, phase: "integrating" }));
       const workerList = Object.values(outputStore);
       const reviewList = Object.values(reviewStore);
@@ -318,6 +355,7 @@ export default function HomePage() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || `整合失败: ${resp.status}`);
       setIntegration(data.integration);
+      appendCommunicationLog({ taskId: "final", attempt: 1, from: "system", to: "user", timestamp: new Date().toISOString(), payload: { event: "integration_to_final", status: data.integration?.status ?? "unknown" } });
       setProgress((prev) => ({ ...prev, done: prev.total, phase: "done" }));
     } catch (error) {
       const detail: WorkflowErrorDetail = {
@@ -330,6 +368,7 @@ export default function HomePage() {
         stack: (error as Error).stack || "",
       };
       setErrorMessage((error as Error).message);
+      appendCommunicationLog({ taskId: "final", attempt: 1, from: "system", to: "user", timestamp: new Date().toISOString(), payload: { event: "integration_to_final", status: "failed", error: (error as Error).message } });
       appendLog("error", "最终组装失败", detail);
     } finally {
       setLoading("");
@@ -350,6 +389,7 @@ export default function HomePage() {
       if (!r.ok) throw new Error(d.error || `计划生成失败: ${r.status}`);
 
       appendLog("info", "计划生成成功", { taskCount: d.plan?.tasks?.length ?? 0 });
+      appendCommunicationLog({ taskId: "plan", attempt: 1, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { event: "planner_to_workers", taskCount: d.plan?.tasks?.length ?? 0 } });
       setPlan(d.plan);
       setWorkerOutputs({});
       setReviews({});

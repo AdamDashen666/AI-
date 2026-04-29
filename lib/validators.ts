@@ -116,16 +116,19 @@ export function validateReviewRequest(body: unknown): ValidationResult<{ config:
   return { ok: true, data: { config: config.data, task: task.data, output: output.data } };
 }
 
-export function validateRunTaskRequest(body: unknown): ValidationResult<{ config: AIConfig; task: PlanTask; requirement: string; attempt?: number; previousOutput?: WorkerOutput; previousReview?: ReviewOutput; fixBrief?: FixBrief }> {
+export function validateRunTaskRequest(body: unknown): ValidationResult<{ config: AIConfig; task: PlanTask; requirement: string; attempt?: number; previousOutput?: Record<string, unknown>; previousReview?: ReviewOutput; fixBrief?: FixBrief }> {
   if (!isObject(body)) return invalid("request body must be an object");
   const config = validateAIConfig(body.config); if (!config.ok) return config;
   const task = validatePlanTask(body.task, "task"); if (!task.ok) return task;
   if (!isNonEmptyString(body.requirement)) return invalid("requirement must be a non-empty string");
   if (body.attempt !== undefined && typeof body.attempt !== "number") return invalid("attempt must be a number");
-  let previousOutput: WorkerOutput | undefined;
+  let previousOutput: Record<string, unknown> | undefined;
   let previousReview: ReviewOutput | undefined;
   let fixBrief: FixBrief | undefined;
-  if (body.previousOutput !== undefined) { const r = validateWorkerOutput(body.previousOutput, "previousOutput"); if (!r.ok) return r; previousOutput = r.data; }
+  if (body.previousOutput !== undefined) {
+    if (!isObject(body.previousOutput)) return invalid("previousOutput must be an object");
+    previousOutput = body.previousOutput;
+  }
   if (body.previousReview !== undefined) { const r = validateReviewOutput(body.previousReview, "previousReview"); if (!r.ok) return r; previousReview = r.data; }
   if (body.fixBrief !== undefined) { const r = validateFixBrief(body.fixBrief, "fixBrief"); if (!r.ok) return r; fixBrief = r.data; }
   return { ok: true, data: { config: config.data, task: task.data, requirement: body.requirement, attempt: body.attempt as number | undefined, previousOutput, previousReview, fixBrief } };
