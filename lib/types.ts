@@ -28,6 +28,9 @@ export interface WorkerOutput {
   filesSuggested: string[];
   risks: string[];
   notes: string;
+  fixedIssues?: string[];
+  remainingRisks?: string[];
+  changedFiles?: string[];
 }
 
 export interface ReviewOutput {

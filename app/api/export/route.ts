@@ -94,7 +94,10 @@ function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
     .map((output) => {
       const filesSuggested = safeList(output.filesSuggested).join(", ") || "N/A";
       const risks = safeList(output.risks).join(", ") || "N/A";
-      return `- **Task ${output.taskId}**\n  - Result: ${output.result || "N/A"}\n  - Files Suggested: ${filesSuggested}\n  - Risks: ${risks}\n  - Notes: ${output.notes || "N/A"}`;
+      const fixedIssues = safeList(output.fixedIssues).join(", ") || "N/A";
+      const remainingRisks = safeList(output.remainingRisks).join(", ") || "N/A";
+      const changedFiles = safeList(output.changedFiles).join(", ") || "N/A";
+      return `- **Task ${output.taskId}**\n  - Result: ${output.result || "N/A"}\n  - Files Suggested: ${filesSuggested}\n  - Risks: ${risks}\n  - Notes: ${output.notes || "N/A"}\n  - Fixed Issues: ${fixedIssues}\n  - Remaining Risks: ${remainingRisks}\n  - Changed Files: ${changedFiles}`;
     })
     .join("\n");
   const reviewSection = reviews
@@ -107,7 +110,12 @@ function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
 
   const fixBriefSection = taskAttempts
     .filter((attempt) => attempt.fixBrief)
-    .map((attempt) => `- Task ${attempt.fixBrief?.taskId} / Attempt ${attempt.attempt}: ${attempt.fixBrief?.messageToWorker || "N/A"}`)
+    .map((attempt) => {
+      const fixedIssues = safeList(attempt.workerOutput?.fixedIssues).join(", ") || "N/A";
+      const remainingRisks = safeList(attempt.workerOutput?.remainingRisks).join(", ") || "N/A";
+      const changedFiles = safeList(attempt.workerOutput?.changedFiles).join(", ") || "N/A";
+      return `- Task ${attempt.fixBrief?.taskId} / Attempt ${attempt.attempt}: ${attempt.fixBrief?.messageToWorker || "N/A"}\n  - Fixed Issues: ${fixedIssues}\n  - Remaining Risks: ${remainingRisks}\n  - Changed Files: ${changedFiles}`;
+    })
     .join("\n");
   return ["# Workflow Result", "", "## Project Name", integration.projectName || plan.projectName || "N/A", "", "## Status", integration.status || "in_progress", "", "## Summary", integration.summary || "N/A", "", "## Final Result", integration.finalResult || "N/A", "", "## Final Task Statuses", ...(plan.tasks.map((task) => `- ${task.id}: ${reviews.find((review) => review.taskId === task.id)?.passed ? "passed" : "failed"}`)), "", "## Changelog", ...(safeList(integration.changelog).length ? safeList(integration.changelog).map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(safeList(integration.remainingProblems).length ? safeList(integration.remainingProblems).map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(safeList(integration.nextSteps).length ? safeList(integration.nextSteps).map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback Summary", reviewSection || "- N/A", "", "## Coordinator Fix Briefs", fixBriefSection || "- N/A"].join("\n");
 }
