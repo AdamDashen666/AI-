@@ -9,10 +9,10 @@ export async function POST(req: Request) {
     if (!validated.ok) {
       return NextResponse.json({ error: validated.error, code: validated.code }, { status: 400 });
     }
-    const { config, task, requirement, attempt, previousOutput, previousReview, fixBrief } = validated.data;
+    const { config, task, requirement, attempt, previousOutput, previousReview, fixBrief, dependencyOutputs, previousOutputContext } = validated.data;
     const output = attempt && attempt > 1 && previousOutput && previousReview && fixBrief
       ? await runWorkerFixTask(config, task, requirement, previousOutput as unknown as WorkerOutput, previousReview, fixBrief)
-      : await runWorkerTask(config, task, requirement);
+      : await runWorkerTask(config, task, requirement, dependencyOutputs ?? previousOutputContext);
     return NextResponse.json({ output });
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 500 });

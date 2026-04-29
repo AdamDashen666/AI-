@@ -116,7 +116,7 @@ export function validateReviewRequest(body: unknown): ValidationResult<{ config:
   return { ok: true, data: { config: config.data, task: task.data, output: output.data } };
 }
 
-export function validateRunTaskRequest(body: unknown): ValidationResult<{ config: AIConfig; task: PlanTask; requirement: string; attempt?: number; previousOutput?: Record<string, unknown>; previousReview?: ReviewOutput; fixBrief?: FixBrief }> {
+export function validateRunTaskRequest(body: unknown): ValidationResult<{ config: AIConfig; task: PlanTask; requirement: string; attempt?: number; previousOutput?: Record<string, unknown>; previousReview?: ReviewOutput; fixBrief?: FixBrief; dependencyOutputs?: Record<string, unknown>; previousOutputContext?: Record<string, unknown> }> {
   if (!isObject(body)) return invalid("request body must be an object");
   const config = validateAIConfig(body.config); if (!config.ok) return config;
   const task = validatePlanTask(body.task, "task"); if (!task.ok) return task;
@@ -125,13 +125,23 @@ export function validateRunTaskRequest(body: unknown): ValidationResult<{ config
   let previousOutput: Record<string, unknown> | undefined;
   let previousReview: ReviewOutput | undefined;
   let fixBrief: FixBrief | undefined;
+  let dependencyOutputs: Record<string, unknown> | undefined;
+  let previousOutputContext: Record<string, unknown> | undefined;
   if (body.previousOutput !== undefined) {
     if (!isObject(body.previousOutput)) return invalid("previousOutput must be an object");
     previousOutput = body.previousOutput;
   }
+  if (body.dependencyOutputs !== undefined) {
+    if (!isObject(body.dependencyOutputs)) return invalid("dependencyOutputs must be an object");
+    dependencyOutputs = body.dependencyOutputs;
+  }
+  if (body.previousOutputContext !== undefined) {
+    if (!isObject(body.previousOutputContext)) return invalid("previousOutputContext must be an object");
+    previousOutputContext = body.previousOutputContext;
+  }
   if (body.previousReview !== undefined) { const r = validateReviewOutput(body.previousReview, "previousReview"); if (!r.ok) return r; previousReview = r.data; }
   if (body.fixBrief !== undefined) { const r = validateFixBrief(body.fixBrief, "fixBrief"); if (!r.ok) return r; fixBrief = r.data; }
-  return { ok: true, data: { config: config.data, task: task.data, requirement: body.requirement, attempt: body.attempt as number | undefined, previousOutput, previousReview, fixBrief } };
+  return { ok: true, data: { config: config.data, task: task.data, requirement: body.requirement, attempt: body.attempt as number | undefined, previousOutput, previousReview, fixBrief, dependencyOutputs, previousOutputContext } };
 }
 
 export function validateFixBriefRequest(body: unknown): ValidationResult<{ config: AIConfig; requirement: string; task: PlanTask; attempt: number; previousOutput: WorkerOutput; review: ReviewOutput }> {
