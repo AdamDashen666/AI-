@@ -37,11 +37,18 @@ export interface ReviewOutput {
 }
 
 export interface IntegrationOutput {
+  projectName: string;
+  status: "complete" | "in_progress" | "failed";
   finalResult: string;
   summary: string;
+  files: Array<{
+    path: string;
+    content: string;
+  }>;
   changelog: string[];
   remainingProblems: string[];
   nextSteps: string[];
+  testPlan: Record<string, unknown>;
 }
 
 

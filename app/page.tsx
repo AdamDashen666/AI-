@@ -18,7 +18,6 @@ export default function HomePage() {
   const [models, setModels] = useState<string[]>([]);
   const [modelStatus, setModelStatus] = useState<string>("");
   const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<number>(2);
-  const [maxWorkersToUse, setMaxWorkersToUse] = useState<number>(5);
   const [useCustomWorkerModel, setUseCustomWorkerModel] = useState<boolean>(false);
   const [customWorkerModel, setCustomWorkerModel] = useState<string>("");
   const [progress, setProgress] = useState({ total: 0, done: 0, phase: "idle" });
@@ -34,6 +33,10 @@ export default function HomePage() {
   }, [plan, workerOutputs, reviews]);
 
   const progressPercent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+  const missingTasks = useMemo(() => {
+    if (!plan) return [];
+    return plan.tasks.filter((task) => !workerOutputs[task.id] || !reviews[task.id]).map((task) => task.id);
+  }, [plan, workerOutputs, reviews]);
 
   async function refreshModels() {
     setModelStatus("正在刷新模型...");
@@ -82,9 +85,8 @@ export default function HomePage() {
   async function executeTasksAndIntegrate(currentPlan: ProjectPlan) {
     setLoading("running tasks");
     const activeConfig = useCustomWorkerModel && customWorkerModel.trim() ? { ...config, model: customWorkerModel.trim() } : config;
-    const maxUse = Math.max(1, Math.floor(maxWorkersToUse));
     const concurrency = Math.max(1, Math.floor(maxConcurrentWorkers));
-    const selectedTasks = currentPlan.tasks.slice(0, Math.min(maxUse, currentPlan.tasks.length));
+    const selectedTasks = currentPlan.tasks;
     const outputStore: Record<string, WorkerOutput> = {};
     const reviewStore: Record<string, ReviewOutput> = {};
     setProgress({ total: selectedTasks.length + 1, done: 0, phase: "running" });
@@ -197,10 +199,6 @@ export default function HomePage() {
         最多同时运行 worker 数量：
         <input type="number" min={1} value={maxConcurrentWorkers} onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value) || 1)} />
       </label>
-      <label>
-        最多使用 worker 数量：
-        <input type="number" min={1} value={maxWorkersToUse} onChange={(e) => setMaxWorkersToUse(Number(e.target.value) || 1)} />
-      </label>
       <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
         <input type="checkbox" checked={useCustomWorkerModel} onChange={(e) => setUseCustomWorkerModel(e.target.checked)} style={{ width: 16, marginBottom: 0 }} />
         使用自定义 Worker 模型
@@ -230,11 +228,16 @@ export default function HomePage() {
       <h3>Reviewer 反馈</h3>
       <pre>{JSON.stringify(reviews, null, 2)}</pre>
       <h3>最终合并结果</h3>
+      {missingTasks.length > 0 ? (
+        <div className="status" style={{ color: "#b00020" }}>
+          缺失任务输出/评审：{missingTasks.join(", ")}
+        </div>
+      ) : null}
       <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-        <button onClick={() => downloadExport("md")} disabled={!integration || !plan || !!loading}>下载 Markdown</button>
-        <button onClick={() => downloadExport("json")} disabled={!integration || !plan || !!loading}>下载 JSON</button>
-        <button onClick={() => downloadExport("txt")} disabled={!integration || !plan || !!loading}>下载 TXT</button>
-        <button onClick={() => downloadExport("zip")} disabled={!integration || !plan || !!loading}>下载 ZIP</button>
+        <button onClick={() => downloadExport("md")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 Markdown</button>
+        <button onClick={() => downloadExport("json")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 JSON</button>
+        <button onClick={() => downloadExport("txt")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 TXT</button>
+        <button onClick={() => downloadExport("zip")} disabled={!integration || integration.status !== "complete" || !plan || !!loading}>下载 ZIP</button>
       </div>
       <pre>{JSON.stringify(integration, null, 2)}</pre>
     </div>
