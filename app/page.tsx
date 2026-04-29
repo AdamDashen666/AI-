@@ -7,6 +7,7 @@ type TaskStatus = "idle" | "waiting_dependencies" | "done" | "reviewed";
 type ExportFormat = "md" | "json" | "txt" | "zip";
 type AppLogLevel = "info" | "warn" | "error";
 type AppLogEntry = { timestamp: string; level: AppLogLevel; message: string; detail?: unknown };
+type WorkflowErrorDetail = { stage: "parseWorkerOutput" | "validateSchema" | "startTask" | "reviewTask" | "finalAssembly"; taskId: string; attempt: number; schemaName: string; rawValue: string; errorMessage: string; stack: string };
 
 function getFriendlyErrorMessage(rawMessage: string): string {
   const match = rawMessage.match(/^\[(timeout|upstream_http|parse_error|network|unknown)\]\s*(.*)$/);
@@ -157,7 +158,8 @@ export default function HomePage() {
         setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
 
         const passedByScore = Number(currentReview.score) >= minimumReviewScore;
-        const isPassed = Boolean(currentReview?.passed) && passedByScore;
+        const hasBlockingIssues = Array.isArray(currentReview.issues) && currentReview.issues.length > 0;
+        const isPassed = Boolean(currentReview?.passed) && passedByScore && !hasBlockingIssues;
         if (!passedByScore) {
           currentReview = {
             ...currentReview,
@@ -182,6 +184,15 @@ export default function HomePage() {
       }
     } catch (error) {
       const message = (error as Error).message || "未知错误";
+      const detail: WorkflowErrorDetail = {
+        stage: message.includes("评审") ? "reviewTask" : "startTask",
+        taskId: taskKey,
+        attempt: attempts.length + 1,
+        schemaName: "WorkerOutput/ReviewOutput",
+        rawValue: message,
+        errorMessage: message,
+        stack: (error as Error).stack || "",
+      };
       currentOutput = currentOutput ?? {
         taskId: taskKey,
         result: `任务失败：${message}`,
@@ -201,7 +212,7 @@ export default function HomePage() {
       };
       attempts.push({ attempt: attempts.length + 1, workerOutput: currentOutput, review: currentReview, passed: false });
       setErrorMessage((prev) => (prev ? `${prev}\n${task.id}: ${message}` : `${task.id}: ${message}`));
-      appendLog("error", `任务 ${taskKey} 执行失败`, message);
+      appendLog("error", `任务 ${taskKey} 执行失败`, detail);
     }
 
     if (!currentOutput || !currentReview) throw new Error(`任务 ${taskKey} 没有产生有效结果`);
@@ -295,9 +306,19 @@ export default function HomePage() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || `整合失败: ${resp.status}`);
       setIntegration(data.integration);
-      setProgress((prev) => ({ ...prev, done: prev.total, phase: "done" }));
+      setProgress((prev) => ({ ...prev, done: prev.total, phase: "completed" }));
     } catch (error) {
+      const detail: WorkflowErrorDetail = {
+        stage: "finalAssembly",
+        taskId: "task-006",
+        attempt: 1,
+        schemaName: "IntegrationOutput",
+        rawValue: String((error as Error).message || ""),
+        errorMessage: (error as Error).message,
+        stack: (error as Error).stack || "",
+      };
       setErrorMessage((error as Error).message);
+      appendLog("error", "最终组装失败", detail);
     } finally {
       setLoading("");
     }

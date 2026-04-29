@@ -22,7 +22,7 @@ Rules:
 3) Do NOT violate FixBrief.forbiddenChanges.
 4) Satisfy every FixBrief.qualityChecklist item.
 5) Output strict JSON only.
-6) Must include taskId and also include fixedIssues, remainingRisks, changedFiles, and full updated result.`;
+6) Must include taskId and also include fixedIssues, remainingRisks, and changedFiles (array of {path, content}).`;
 
 export const reviewerSystemPrompt = `You are Reviewer AI.
 Rules:

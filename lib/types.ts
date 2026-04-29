@@ -30,7 +30,10 @@ export interface WorkerOutput {
   notes: string;
   fixedIssues?: string[];
   remainingRisks?: string[];
-  changedFiles?: string[];
+  changedFiles?: Array<{
+    path: string;
+    content: string;
+  }>;
 }
 
 export interface ReviewOutput {
