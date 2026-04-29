@@ -10,12 +10,16 @@ interface ExportRequestBody {
   plan: ProjectPlan;
   workerOutputs: WorkerOutput[];
   reviews: ReviewOutput[];
-  taskAttempts?: TaskAttempt[];
-  communicationLog?: CommunicationLogEntry[];
+  taskAttempts: TaskAttempt[];
+  communicationLog: CommunicationLogEntry[];
 }
 
 function safeList(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
 }
 
 function getTimestampParts(date: Date) {
@@ -27,6 +31,60 @@ function getTimestampParts(date: Date) {
   const minute = pad(date.getUTCMinutes());
   const second = pad(date.getUTCSeconds());
   return { date: `${year}${month}${day}`, time: `${hour}${minute}${second}` };
+}
+
+function validateExportRequestBody(raw: unknown): { ok: true; data: ExportRequestBody } | { ok: false; error: string } {
+  if (!isObject(raw)) {
+    return { ok: false, error: "Invalid request body" };
+  }
+
+  const format = raw.format;
+  if (format !== "md" && format !== "json" && format !== "txt" && format !== "zip") {
+    return { ok: false, error: "Invalid format" };
+  }
+
+  const integration = raw.integration;
+  if (!isObject(integration)) {
+    return { ok: false, error: "Invalid integration payload" };
+  }
+  if (typeof integration.status !== "string" || typeof integration.projectName !== "string") {
+    return { ok: false, error: "Integration payload missing required fields" };
+  }
+
+  const plan = raw.plan;
+  if (!isObject(plan) || !Array.isArray(plan.tasks)) {
+    return { ok: false, error: "Invalid plan payload" };
+  }
+
+  if (!Array.isArray(raw.workerOutputs)) {
+    return { ok: false, error: "Invalid workerOutputs payload" };
+  }
+  if (!Array.isArray(raw.reviews)) {
+    return { ok: false, error: "Invalid reviews payload" };
+  }
+
+  const taskAttempts = raw.taskAttempts;
+  if (taskAttempts !== undefined && !Array.isArray(taskAttempts)) {
+    return { ok: false, error: "Invalid taskAttempts payload" };
+  }
+
+  const communicationLog = raw.communicationLog;
+  if (communicationLog !== undefined && !Array.isArray(communicationLog)) {
+    return { ok: false, error: "Invalid communicationLog payload" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      format,
+      integration: integration as unknown as IntegrationOutput,
+      plan: plan as unknown as ProjectPlan,
+      workerOutputs: raw.workerOutputs as WorkerOutput[],
+      reviews: raw.reviews as ReviewOutput[],
+      taskAttempts: (taskAttempts ?? []) as TaskAttempt[],
+      communicationLog: (communicationLog ?? []) as CommunicationLogEntry[],
+    },
+  };
 }
 
 function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
@@ -59,12 +117,15 @@ function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
 
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as ExportRequestBody;
-    const { format, integration, plan, workerOutputs, reviews, taskAttempts = [], communicationLog = [] } = body;
+    const rawBody: unknown = await req.json();
+    const validated = validateExportRequestBody(rawBody);
 
-    if (!["md", "json", "txt", "zip"].includes(format)) {
-      return NextResponse.json({ error: "Invalid format" }, { status: 400 });
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.error }, { status: 400 });
     }
+
+    const { format, integration, plan, workerOutputs, reviews, taskAttempts, communicationLog } = validated.data;
+
     if (integration.status !== "complete") {
       return NextResponse.json({ error: "Integration is not complete. Export is blocked." }, { status: 400 });
     }
@@ -84,7 +145,7 @@ export async function POST(req: Request) {
 
     if (format === "zip") {
       const zip = new JSZip();
-      (integration.files || []).forEach((file) => {
+      (integration.files || []).forEach((file: { path?: string; content?: string }) => {
         if (file?.path?.trim()) {
           zip.file(file.path, file.content ?? "");
         }
