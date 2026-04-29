@@ -18,28 +18,60 @@ function migrateLegacyWorkerOutput(parsed: Record<string, unknown>, task: PlanTa
   const changedFilesFromLegacy = typeof legacyFullResult === "string" && legacyFullResult.trim().length > 0
     ? [{ path: "index.html", content: legacyFullResult }]
     : [];
+  const normalizedChangedFiles = normalizeChangedFiles(parsed.changedFiles);
+  const hasResult = typeof parsed.result === "string" && parsed.result.trim().length > 0;
+  const legacyResult = hasResult ? String(parsed.result) : JSON.stringify(parsed);
   return {
     taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : task.id,
-    result: typeof parsed.result === "string" ? parsed.result : "",
+    result: legacyResult,
     filesSuggested: Array.isArray(parsed.filesSuggested) ? parsed.filesSuggested.map(String) : [],
     risks: Array.isArray(parsed.risks) ? parsed.risks.map(String) : [],
-    notes: typeof parsed.notes === "string" ? parsed.notes : "",
+    notes: typeof parsed.notes === "string" && parsed.notes.trim().length > 0
+      ? parsed.notes
+      : hasResult
+        ? ""
+        : "legacy structured module output migrated: original payload preserved in result",
     fixedIssues: Array.isArray(parsed.fixedIssues) ? parsed.fixedIssues.map(String) : [],
     remainingRisks: Array.isArray(parsed.remainingRisks) ? parsed.remainingRisks.map(String) : [],
-    changedFiles: normalizeChangedFiles(parsed.changedFiles).length > 0 ? normalizeChangedFiles(parsed.changedFiles) : changedFilesFromLegacy,
+    changedFiles: normalizedChangedFiles.length > 0 ? normalizedChangedFiles : changedFilesFromLegacy,
   };
 }
 
-function normalizeTask(task: Partial<PlanTask>, index: number): PlanTask {
+export function normalizeTask(task: Partial<PlanTask> & { taskId?: string | number; taskName?: string }, index: number): PlanTask {
   const fallbackId = `task_${index + 1}`;
+  const rawId = task.id ?? task.taskId;
+  const normalizedId = typeof rawId === "number" ? String(rawId) : rawId;
   return {
-    id: typeof task.id === "string" && task.id.trim() ? task.id.trim() : fallbackId,
-    name: typeof task.name === "string" && task.name.trim() ? task.name.trim() : `Task ${index + 1}`,
+    id: typeof normalizedId === "string" && normalizedId.trim() ? normalizedId.trim() : fallbackId,
+    name: typeof task.name === "string" && task.name.trim()
+      ? task.name.trim()
+      : typeof task.taskName === "string" && task.taskName.trim()
+        ? task.taskName.trim()
+        : `Task ${index + 1}`,
     description: typeof task.description === "string" ? task.description : "",
     workerType: (task.workerType ?? "code") as PlanTask["workerType"],
     dependencies: Array.isArray(task.dependencies) ? task.dependencies.map((dep) => String(dep)) : [],
   };
 }
+
+export function getIntegrationBlockers(
+  plan: ProjectPlan,
+  outputStore: Record<string, WorkerOutput>,
+  reviewStore: Record<string, ReviewOutput>,
+  minimumReviewScore: number,
+): string[] {
+  return plan.tasks
+    .map((task) => task.id)
+    .filter((taskId) => {
+      const output = outputStore[taskId];
+      const review = reviewStore[taskId];
+      if (!output || !review) return true;
+      const hasIssues = Array.isArray(review.issues) && review.issues.length > 0;
+      return !review.passed || Number(review.score) < minimumReviewScore || hasIssues;
+    });
+}
+
+export { migrateLegacyWorkerOutput };
 
 export async function createPlan(config: AIConfig, requirement: string, maxTasks: number, workerQuotas?: Partial<WorkerQuota>): Promise<ProjectPlan> {
   const workerTypes: WorkerType[] = ["ui", "backend", "research", "code", "test", "integration"];

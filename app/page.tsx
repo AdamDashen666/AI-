@@ -2,8 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
+import { getIntegrationBlockers } from "@/lib/workflow";
 
 type TaskStatus = "idle" | "waiting_dependencies" | "done" | "reviewed";
+type ProgressPhase = "idle" | "planning" | "planned" | "running" | "integrating" | "done";
 type ExportFormat = "md" | "json" | "txt" | "zip";
 type AppLogLevel = "info" | "warn" | "error";
 type AppLogEntry = { timestamp: string; level: AppLogLevel; message: string; detail?: unknown };
@@ -49,7 +51,7 @@ export default function HomePage() {
   });
   const [useCustomWorkerModel, setUseCustomWorkerModel] = useState<boolean>(false);
   const [customWorkerModel, setCustomWorkerModel] = useState<string>("");
-  const [progress, setProgress] = useState({ total: 0, done: 0, phase: "idle" });
+  const [progress, setProgress] = useState<{ total: number; done: number; phase: ProgressPhase }>({ total: 0, done: 0, phase: "idle" });
   const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
 
   const taskStatus = useMemo(() => {
@@ -299,14 +301,20 @@ export default function HomePage() {
         throw new Error(`存在未完成任务，无法进入集成阶段：${unfinishedTasks.join(", ")}`);
       }
 
+      const blockedTasks = getIntegrationBlockers(currentPlan, outputStore, reviewStore, minimumReviewScore);
+      if (blockedTasks.length > 0) {
+        throw new Error(`存在未通过评审的任务，无法进入集成阶段：${blockedTasks.join(", ")}`);
+      }
+
       setLoading("integrating");
+      setProgress((prev) => ({ ...prev, phase: "integrating" }));
       const workerList = Object.values(outputStore);
       const reviewList = Object.values(reviewStore);
       const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: workerList, reviews: reviewList, taskAttempts: allAttempts }) });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || `整合失败: ${resp.status}`);
       setIntegration(data.integration);
-      setProgress((prev) => ({ ...prev, done: prev.total, phase: "completed" }));
+      setProgress((prev) => ({ ...prev, done: prev.total, phase: "done" }));
     } catch (error) {
       const detail: WorkflowErrorDetail = {
         stage: "finalAssembly",
