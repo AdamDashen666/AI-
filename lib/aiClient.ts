@@ -31,18 +31,76 @@ export async function callAI(config: AIConfig, systemPrompt: string, userPrompt:
   return content;
 }
 
-export function parseJsonWithFallback<T>(raw: string, fallback: T): T {
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (m) {
-      try {
-        return JSON.parse(m[0]) as T;
-      } catch {
-        return fallback;
+function extractBalancedJsonCandidate(raw: string): string | null {
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+
+    if (start === -1) {
+      if (ch === "{" || ch === "[") {
+        start = i;
+        depth = 1;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+    } else if (ch === "}" || ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, i + 1);
+      }
+      if (depth < 0) {
+        start = -1;
+        depth = 0;
       }
     }
-    return fallback;
   }
+
+  return null;
+}
+
+export function parseJsonWithFallback<T>(raw: string, fallback: T): T {
+  const candidates: string[] = [];
+
+  candidates.push(raw);
+
+  const fencedMatches = raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi);
+  for (const match of fencedMatches) {
+    if (match[1]) candidates.push(match[1].trim());
+  }
+
+  const balanced = extractBalancedJsonCandidate(raw);
+  if (balanced) candidates.push(balanced);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // continue trying the next candidate
+    }
+  }
+
+  return fallback;
 }
