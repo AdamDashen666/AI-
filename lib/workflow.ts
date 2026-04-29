@@ -2,10 +2,15 @@ import { callAI, parseJsonWithFallback } from "./aiClient";
 import { integratorSystemPrompt, plannerSystemPrompt, reviewerSystemPrompt, workerSystemPrompt } from "./prompts";
 import { AIConfig, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, WorkerOutput } from "./types";
 
-export async function createPlan(config: AIConfig, requirement: string): Promise<ProjectPlan> {
+export async function createPlan(config: AIConfig, requirement: string, maxTasks: number): Promise<ProjectPlan> {
   const fallback: ProjectPlan = { projectName: "Untitled Project", summary: requirement, tasks: [] };
-  const raw = await callAI(config, plannerSystemPrompt, `Requirement:\n${requirement}\n\nReturn strict JSON only.`);
-  return parseJsonWithFallback(raw, fallback);
+  const raw = await callAI(
+    config,
+    plannerSystemPrompt,
+    `Requirement:\n${requirement}\n\nConstraints:\n- Max task count: ${maxTasks}\n- Keep each task clear, independent, and executable\n- If project scope is small, you may return fewer than ${maxTasks} tasks\n\nReturn strict JSON only.`,
+  );
+  const plan = parseJsonWithFallback(raw, fallback);
+  return { ...plan, tasks: Array.isArray(plan.tasks) ? plan.tasks.slice(0, maxTasks) : [] };
 }
 
 export async function runWorkerTask(config: AIConfig, task: PlanTask, requirement: string): Promise<WorkerOutput> {

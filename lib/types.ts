@@ -43,3 +43,10 @@ export interface IntegrationOutput {
   remainingProblems: string[];
   nextSteps: string[];
 }
+
+
+export interface WorkflowSettings {
+  retryCount: number;
+  maxTasks: number;
+  maxWorkers: number;
+}

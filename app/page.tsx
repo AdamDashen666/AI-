@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AIConfig, IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
+import { AIConfig, IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput, WorkflowSettings } from "@/lib/types";
 
 type TaskStatus = "idle" | "running" | "done" | "reviewed";
 type ExportFormat = "md" | "json" | "txt" | "zip";
@@ -21,12 +21,25 @@ export default function HomePage() {
   const taskStatus = useMemo(() => {
     const map: Record<string, TaskStatus> = {};
     plan?.tasks.forEach((t) => {
-      if (reviews[t.id]) map[t.id] = "reviewed";
+      if (errors[t.id]) map[t.id] = "failed";
+      else if (reviews[t.id]) map[t.id] = "reviewed";
       else if (workerOutputs[t.id]) map[t.id] = "done";
       else map[t.id] = "idle";
     });
     return map;
-  }, [plan, workerOutputs, reviews]);
+  }, [plan, workerOutputs, reviews, errors]);
+
+  async function refreshModels() { /* unchanged */
+    setModelStatus("正在刷新模型..."); setErrorMessage("");
+    try {
+      const resp = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseURL: config.baseURL, apiKey: config.apiKey }) });
+      const data = await resp.json(); if (!resp.ok) throw new Error(data.error || `刷新失败: ${resp.status}`);
+      const modelIds = Array.isArray(data.models) ? data.models : [];
+      setModels(modelIds);
+      if (modelIds.length > 0 && !modelIds.includes(config.model)) setConfig({ ...config, model: modelIds[0] });
+      setModelStatus("刷新成功");
+    } catch (error) { setModelStatus(`刷新失败：${(error as Error).message}`); setErrorMessage((error as Error).message); }
+  }
 
   async function refreshModels() {
     setModelStatus("正在刷新模型...");
@@ -113,17 +126,22 @@ export default function HomePage() {
     setLoading(`exporting ${format}`);
     setErrorMessage("");
     try {
-      const resp = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          format,
-          integration,
-          plan,
-          workerOutputs: Object.values(workerOutputs),
-          reviews: Object.values(reviews),
-        }),
-      });
+      const outputs: Record<string, WorkerOutput> = { ...workerOutputs };
+      const reviewMap: Record<string, ReviewOutput> = { ...reviews };
+      const errorMap: Record<string, string> = { ...errors };
+      let nextIndex = 0;
+
+      const runner = async () => {
+        while (nextIndex < plan.tasks.length) {
+          const task = plan.tasks[nextIndex++];
+          setRunningWorkers((v) => v + 1);
+          setCurrentRetryAttempt(1);
+          try {
+            const runResp = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, requirement }) });
+            const runData = await runResp.json();
+            if (!runResp.ok) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
+            outputs[task.id] = runData.output;
+            setWorkerOutputs({ ...outputs });
 
       if (!resp.ok) {
         const errorBody = await resp.json().catch(() => null);

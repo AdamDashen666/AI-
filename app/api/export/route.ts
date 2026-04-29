@@ -10,6 +10,7 @@ interface ExportRequestBody {
   plan: ProjectPlan;
   workerOutputs: WorkerOutput[];
   reviews: ReviewOutput[];
+  settings?: WorkflowSettings;
 }
 
 function getTimestampParts(date: Date) {
