@@ -17,6 +17,8 @@ export default function HomePage() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [models, setModels] = useState<string[]>([]);
   const [modelStatus, setModelStatus] = useState<string>("");
+  const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<number>(2);
+  const [maxWorkersToUse, setMaxWorkersToUse] = useState<number>(5);
 
   const taskStatus = useMemo(() => {
     const map: Record<string, TaskStatus> = {};
@@ -77,30 +79,40 @@ export default function HomePage() {
     }
   }
 
+  async function executeOneTask(task: ProjectPlan["tasks"][number]) {
+    const runResp = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, requirement }) });
+    const runData = await runResp.json();
+    if (!runResp.ok) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
+
+    setWorkerOutputs((prev) => ({ ...prev, [task.id]: runData.output }));
+
+    const reviewResp = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, output: runData.output }) });
+    const reviewData = await reviewResp.json();
+    if (!reviewResp.ok) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
+
+    setReviews((prev) => ({ ...prev, [task.id]: reviewData.review }));
+  }
+
   async function executeTasks() {
     if (!plan) return;
     setLoading("running tasks");
     setErrorMessage("");
-    try {
-      const outputs: Record<string, WorkerOutput> = {};
-      const reviewMap: Record<string, ReviewOutput> = {};
-      for (const task of plan.tasks) {
-        const runResp = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, requirement }) });
-        const runData = await runResp.json();
-        if (!runResp.ok) {
-          throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
-        }
-        outputs[task.id] = runData.output;
-        setWorkerOutputs({ ...outputs });
 
-        const reviewResp = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, output: runData.output }) });
-        const reviewData = await reviewResp.json();
-        if (!reviewResp.ok) {
-          throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
+    const maxUse = Math.max(1, Math.floor(maxWorkersToUse));
+    const concurrency = Math.max(1, Math.floor(maxConcurrentWorkers));
+    const selectedTasks = plan.tasks.slice(0, Math.min(maxUse, plan.tasks.length));
+
+    try {
+      let index = 0;
+      const workers = Array.from({ length: Math.min(concurrency, selectedTasks.length) }, async () => {
+        while (true) {
+          const current = index;
+          index += 1;
+          if (current >= selectedTasks.length) break;
+          await executeOneTask(selectedTasks[current]);
         }
-        reviewMap[task.id] = reviewData.review;
-        setReviews({ ...reviewMap });
-      }
+      });
+      await Promise.all(workers);
     } catch (error) {
       setErrorMessage((error as Error).message);
     } finally {
@@ -175,6 +187,14 @@ export default function HomePage() {
       <input placeholder="Model Name (fallback)" value={config.model} onChange={(e)=>setConfig({...config,model:e.target.value})}/>
       <div className="status">模型状态：{modelStatus || "idle"}</div>
       <textarea rows={8} placeholder="输入你的项目需求..." value={requirement} onChange={(e)=>setRequirement(e.target.value)} />
+      <label>
+        最多同时运行 worker 数量：
+        <input type="number" min={1} value={maxConcurrentWorkers} onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value) || 1)} />
+      </label>
+      <label>
+        最多使用 worker 数量：
+        <input type="number" min={1} value={maxWorkersToUse} onChange={(e) => setMaxWorkersToUse(Number(e.target.value) || 1)} />
+      </label>
       <button onClick={generatePlan} disabled={!requirement || !config.apiKey || !config.model.trim() || !!loading}>生成计划</button>
       <button onClick={executeTasks} disabled={!plan || !!loading}>执行任务</button>
       <button onClick={integrate} disabled={!plan || !!loading}>合并结果</button>
