@@ -1,3 +1,4 @@
+import JSZip from "jszip";
 import { NextResponse } from "next/server";
 import { IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
 
@@ -11,6 +12,10 @@ interface ExportRequestBody {
   reviews: ReviewOutput[];
 }
 
+function safeList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
 function getTimestampParts(date: Date) {
   const pad = (value: number) => value.toString().padStart(2, "0");
   const year = date.getUTCFullYear();
@@ -22,19 +27,29 @@ function getTimestampParts(date: Date) {
   return { date: `${year}${month}${day}`, time: `${hour}${minute}${second}` };
 }
 
-function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string { /* unchanged */
+function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
   const { integration, plan, workerOutputs, reviews } = body;
-  const workerSection = workerOutputs.map((output) => `- **Task ${output.taskId}**\n  - Result: ${output.result}\n  - Files Suggested: ${output.filesSuggested.join(", ") || "N/A"}\n  - Risks: ${output.risks.join(", ") || "N/A"}\n  - Notes: ${output.notes || "N/A"}`).join("\n");
-  const reviewSection = reviews.map((review) => `- **Task ${review.taskId}**\n  - Passed: ${review.passed ? "Yes" : "No"}\n  - Score: ${review.score}\n  - Issues: ${review.issues.join(", ") || "N/A"}\n  - Suggestions: ${review.suggestions.join(", ") || "N/A"}`).join("\n");
+  const workerSection = workerOutputs
+    .map((output) => {
+      const filesSuggested = safeList(output.filesSuggested).join(", ") || "N/A";
+      const risks = safeList(output.risks).join(", ") || "N/A";
+      return `- **Task ${output.taskId}**\n  - Result: ${output.result || "N/A"}\n  - Files Suggested: ${filesSuggested}\n  - Risks: ${risks}\n  - Notes: ${output.notes || "N/A"}`;
+    })
+    .join("\n");
+  const reviewSection = reviews
+    .map((review) => {
+      const issues = safeList(review.issues).join(", ") || "N/A";
+      const suggestions = safeList(review.suggestions).join(", ") || "N/A";
+      return `- **Task ${review.taskId}**\n  - Passed: ${review.passed ? "Yes" : "No"}\n  - Score: ${review.score}\n  - Issues: ${issues}\n  - Suggestions: ${suggestions}`;
+    })
+    .join("\n");
 
-  return ["# Workflow Result", "", "## Project Name", plan.projectName, "", "## Summary", integration.summary, "", "## Final Result", integration.finalResult, "", "## Changelog", ...(integration.changelog.length ? integration.changelog.map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(integration.remainingProblems.length ? integration.remainingProblems.map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(integration.nextSteps.length ? integration.nextSteps.map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback", reviewSection || "- N/A"].join("\n");
+  return ["# Workflow Result", "", "## Project Name", plan.projectName, "", "## Summary", integration.summary, "", "## Final Result", integration.finalResult, "", "## Changelog", ...(safeList(integration.changelog).length ? safeList(integration.changelog).map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(safeList(integration.remainingProblems).length ? safeList(integration.remainingProblems).map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(safeList(integration.nextSteps).length ? safeList(integration.nextSteps).map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback", reviewSection || "- N/A"].join("\n");
 }
 
 function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
   return buildMarkdownContent(body).replace(/^#\s+/gm, "").replace(/^##\s+/gm, "").replace(/\*\*/g, "");
 }
-
-
 
 export async function POST(req: Request) {
   try {
@@ -55,11 +70,24 @@ export async function POST(req: Request) {
     }
 
     const textBody = { integration, plan, workerOutputs, reviews };
+    const markdownContent = buildMarkdownContent(textBody);
+    const txtContent = buildTextContent(textBody);
+
     if (format === "zip") {
-      return NextResponse.json({ error: "ZIP export is temporarily unavailable in this environment." }, { status: 501 });
+      const zip = new JSZip();
+      zip.file(`${filenameBase}.md`, markdownContent);
+      zip.file(`${filenameBase}.txt`, txtContent);
+      zip.file(`${filenameBase}.json`, JSON.stringify({ integration, plan, workerOutputs, reviews }, null, 2));
+      const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+      return new NextResponse(zipBuffer, {
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": `attachment; filename=\"${filenameBase}.zip\"`,
+        },
+      });
     }
 
-    const content = format === "md" ? buildMarkdownContent(textBody) : buildTextContent(textBody);
+    const content = format === "md" ? markdownContent : txtContent;
     const fileName = `${filenameBase}.${format}`;
     const contentType = format === "md" ? "text/markdown" : "text/plain";
 
