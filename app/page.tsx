@@ -6,6 +6,10 @@ import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPl
 type TaskStatus = "idle" | "done" | "reviewed";
 type ExportFormat = "md" | "json" | "txt" | "zip";
 
+function normalizeTaskKey(taskId: unknown): string {
+  return String(taskId ?? "").trim();
+}
+
 export default function HomePage() {
   const [config, setConfig] = useState<AIConfig>({ baseURL: "https://api.openai.com/v1", apiKey: "", model: "" });
   const [requirement, setRequirement] = useState("");
@@ -27,9 +31,10 @@ export default function HomePage() {
   const taskStatus = useMemo(() => {
     const map: Record<string, TaskStatus> = {};
     plan?.tasks.forEach((t) => {
-      if (reviews[t.id]) map[t.id] = "reviewed";
-      else if (workerOutputs[t.id]) map[t.id] = "done";
-      else map[t.id] = "idle";
+      const taskKey = normalizeTaskKey(t.id);
+      if (reviews[taskKey]) map[taskKey] = "reviewed";
+      else if (workerOutputs[taskKey]) map[taskKey] = "done";
+      else map[taskKey] = "idle";
     });
     return map;
   }, [plan, workerOutputs, reviews]);
@@ -37,7 +42,10 @@ export default function HomePage() {
   const progressPercent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
   const missingTasks = useMemo(() => {
     if (!plan) return [];
-    return plan.tasks.filter((task) => !workerOutputs[task.id] || !reviews[task.id]).map((task) => task.id);
+    return plan.tasks
+      .map((task) => ({ key: normalizeTaskKey(task.id), label: String(task.id) }))
+      .filter((task) => !workerOutputs[task.key] || !reviews[task.key])
+      .map((task) => task.label);
   }, [plan, workerOutputs, reviews]);
 
   async function refreshModels() {
@@ -69,6 +77,7 @@ export default function HomePage() {
     outputStore: Record<string, WorkerOutput>,
     reviewStore: Record<string, ReviewOutput>,
   ): Promise<TaskAttempt[]> {
+    const taskKey = normalizeTaskKey(task.id);
     const maxReviewFixAttempts = 3;
     const attempts: TaskAttempt[] = [];
     let currentOutput: WorkerOutput | null = null;
@@ -79,13 +88,13 @@ export default function HomePage() {
         const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
         if (!runResp.ok || !runData.output) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
         currentOutput = runData.output;
-        setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
+        setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
 
         const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
         const reviewData: { review?: ReviewOutput; error?: string } = await reviewResp.json().catch(() => ({}));
         if (!reviewResp.ok || !reviewData.review) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
         currentReview = reviewData.review;
-        setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
+        setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
 
         const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: Boolean(currentReview?.passed) };
         if (currentReview.passed) {
@@ -97,20 +106,20 @@ export default function HomePage() {
         if (!coordinatorResp.ok || !coordinatorData.fixBrief) throw new Error(coordinatorData.error || `协调失败: ${coordinatorResp.status}`);
         const fixBrief: FixBrief = coordinatorData.fixBrief;
         attemptItem.fixBrief = fixBrief;
-        setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> }]);
+        setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> }]);
         attempts.push(attemptItem);
       }
     } catch (error) {
       const message = (error as Error).message || "未知错误";
       currentOutput = currentOutput ?? {
-        taskId: task.id,
+        taskId: taskKey,
         result: `任务失败：${message}`,
         filesSuggested: [],
         risks: [message],
         notes: "Worker 执行失败，已生成兜底输出以避免流程卡住。",
       };
       currentReview = currentReview ?? {
-        taskId: task.id,
+        taskId: taskKey,
         passed: false,
         issues: [message],
         suggestions: ["检查 API 配置、模型可用性与返回 JSON 格式后重试。"],
@@ -120,12 +129,12 @@ export default function HomePage() {
       setErrorMessage((prev) => (prev ? `${prev}\n${task.id}: ${message}` : `${task.id}: ${message}`));
     }
 
-    if (!currentOutput || !currentReview) throw new Error(`任务 ${task.id} 没有产生有效结果`);
-    outputStore[task.id] = currentOutput;
-    reviewStore[task.id] = currentReview;
-    setWorkerOutputs((prev) => ({ ...prev, [task.id]: currentOutput }));
-    setReviews((prev) => ({ ...prev, [task.id]: currentReview }));
-    setTaskAttempts((prev) => ({ ...prev, [task.id]: attempts }));
+    if (!currentOutput || !currentReview) throw new Error(`任务 ${taskKey} 没有产生有效结果`);
+    outputStore[taskKey] = currentOutput;
+    reviewStore[taskKey] = currentReview;
+    setWorkerOutputs((prev) => ({ ...prev, [taskKey]: currentOutput }));
+    setReviews((prev) => ({ ...prev, [taskKey]: currentReview }));
+    setTaskAttempts((prev) => ({ ...prev, [taskKey]: attempts }));
     return attempts;
   }
 
@@ -268,16 +277,19 @@ export default function HomePage() {
       <h3>项目计划</h3>
       <pre>{JSON.stringify(plan, null, 2)}</pre>
       <h3>任务</h3>
-      {plan?.tasks.map((t) => <div key={t.id} className="card">
+      {plan?.tasks.map((t) => {
+        const taskKey = normalizeTaskKey(t.id);
+        return <div key={taskKey} className="card">
         <strong>{t.id} - {t.name}</strong>
         <div>{t.description}</div>
         <div>Worker: {t.workerType}</div>
-        <div>Status: {taskStatus[t.id]}</div>
+        <div>Status: {taskStatus[taskKey]}</div>
         <details>
           <summary>Attempt 历史</summary>
-          <pre>{JSON.stringify(taskAttempts[t.id] || [], null, 2)}</pre>
+          <pre>{JSON.stringify(taskAttempts[taskKey] || [], null, 2)}</pre>
         </details>
-      </div>)}
+      </div>;
+      })}
       <h3>Agent Communication Log</h3>
       <pre>{JSON.stringify(communicationLog, null, 2)}</pre>
       <h3>Worker 输出</h3>
