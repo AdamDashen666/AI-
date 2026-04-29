@@ -4,6 +4,8 @@ export interface AIConfig {
   baseURL: string;
   apiKey: string;
   model: string;
+  timeoutMs?: number;
+  retryCount?: number;
 }
 
 export interface PlanTask {
