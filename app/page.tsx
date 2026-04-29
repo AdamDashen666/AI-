@@ -396,6 +396,7 @@ export default function HomePage() {
       const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement, workerQuotas: workerRoleCounts }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || `计划生成失败: ${r.status}`);
+      if (!d.plan?.tasks?.length) throw new Error("计划生成失败：任务列表为空");
 
       appendLog("info", "计划生成成功", { taskCount: d.plan?.tasks?.length ?? 0 });
       setCommunicationLog([]);
