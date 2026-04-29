@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import JSZip from "jszip";
 import { IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
 
 type ExportFormat = "md" | "json" | "txt" | "zip";
@@ -10,7 +9,6 @@ interface ExportRequestBody {
   plan: ProjectPlan;
   workerOutputs: WorkerOutput[];
   reviews: ReviewOutput[];
-  settings?: WorkflowSettings;
 }
 
 function getTimestampParts(date: Date) {
@@ -36,35 +34,7 @@ function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
   return buildMarkdownContent(body).replace(/^#\s+/gm, "").replace(/^##\s+/gm, "").replace(/\*\*/g, "");
 }
 
-async function buildZipContent(body: Omit<ExportRequestBody, "format">) {
-  const zip = new JSZip();
-  const markdown = buildMarkdownContent(body);
-  const text = buildTextContent(body);
 
-  zip.file("final-result.md", markdown);
-  zip.file("final-result.txt", text);
-  zip.file("workflow-data.json", JSON.stringify(body, null, 2));
-  zip.file("plan.json", JSON.stringify(body.plan, null, 2));
-  zip.file("worker-outputs.json", JSON.stringify(body.workerOutputs, null, 2));
-  zip.file("reviews.json", JSON.stringify(body.reviews, null, 2));
-
-  const suggestedFolder = zip.folder("suggested-files");
-  body.workerOutputs.forEach((output) => {
-    const contentParts: string[] = [];
-    if (output.filesSuggested.length) {
-      contentParts.push("# filesSuggested", ...output.filesSuggested.map((file) => `- ${file}`));
-    }
-    const codeBlocks = output.result.match(/```[\s\S]*?```/g) || [];
-    if (codeBlocks.length) {
-      contentParts.push("", "# codeBlocks", ...codeBlocks);
-    }
-    if (contentParts.length) {
-      suggestedFolder?.file(`task_${output.taskId}.md`, contentParts.join("\n"));
-    }
-  });
-
-  return zip.generateAsync({ type: "uint8array" });
-}
 
 export async function POST(req: Request) {
   try {
@@ -86,13 +56,7 @@ export async function POST(req: Request) {
 
     const textBody = { integration, plan, workerOutputs, reviews };
     if (format === "zip") {
-      const zipData = await buildZipContent(textBody);
-      return new NextResponse(zipData, {
-        headers: {
-          "Content-Type": "application/zip",
-          "Content-Disposition": `attachment; filename=\"${filenameBase}.zip\"`,
-        },
-      });
+      return NextResponse.json({ error: "ZIP export is temporarily unavailable in this environment." }, { status: 501 });
     }
 
     const content = format === "md" ? buildMarkdownContent(textBody) : buildTextContent(textBody);
