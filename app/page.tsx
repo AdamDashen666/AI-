@@ -8,6 +8,17 @@ type ExportFormat = "md" | "json" | "txt" | "zip";
 type AppLogLevel = "info" | "warn" | "error";
 type AppLogEntry = { timestamp: string; level: AppLogLevel; message: string; detail?: unknown };
 
+function getFriendlyErrorMessage(rawMessage: string): string {
+  const match = rawMessage.match(/^\[(timeout|upstream_http|parse_error|network|unknown)\]\s*(.*)$/);
+  if (!match) return rawMessage;
+  const [, type, detail] = match;
+  if (type === "timeout") return `请求超时，请稍后重试。${detail ? `（${detail}）` : ""}`;
+  if (type === "upstream_http") return `上游 AI 服务返回错误，请稍后重试或检查配置。${detail ? `（${detail}）` : ""}`;
+  if (type === "parse_error") return `AI 返回内容格式异常，请重试。${detail ? `（${detail}）` : ""}`;
+  if (type === "network") return `网络连接异常，请检查网络后重试。${detail ? `（${detail}）` : ""}`;
+  return `请求失败，请稍后重试。${detail ? `（${detail}）` : ""}`;
+}
+
 function normalizeTaskKey(taskId: unknown): string {
   return String(taskId ?? "").trim();
 }
@@ -397,7 +408,7 @@ export default function HomePage() {
       <div className="status">状态：{loading || "idle"}</div>
       <div className="status">进度：{progressPercent}%（{progress.done}/{progress.total}，{progress.phase}）</div>
       <progress value={progress.done} max={Math.max(progress.total, 1)} style={{ width: "100%", height: 12 }} />
-      {errorMessage ? <div className="status" style={{ color: "#b00020" }}>错误：{errorMessage}</div> : null}
+      {errorMessage ? <div className="status" style={{ color: "#b00020" }}>错误：{getFriendlyErrorMessage(errorMessage)}</div> : null}
     </div>
     <div className="panel grid">
       <h3>项目计划</h3>
