@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AIConfig, IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
+import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
 
 type TaskStatus = "idle" | "done" | "reviewed";
 type ExportFormat = "md" | "json" | "txt" | "zip";
@@ -13,6 +13,8 @@ export default function HomePage() {
   const [workerOutputs, setWorkerOutputs] = useState<Record<string, WorkerOutput>>({});
   const [reviews, setReviews] = useState<Record<string, ReviewOutput>>({});
   const [integration, setIntegration] = useState<IntegrationOutput | null>(null);
+  const [taskAttempts, setTaskAttempts] = useState<Record<string, TaskAttempt[]>>({});
+  const [communicationLog, setCommunicationLog] = useState<CommunicationLogEntry[]>([]);
   const [loading, setLoading] = useState<string>("");
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [models, setModels] = useState<string[]>([]);
@@ -67,19 +69,43 @@ export default function HomePage() {
     outputStore: Record<string, WorkerOutput>,
     reviewStore: Record<string, ReviewOutput>,
   ) {
-    const runResp = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement }) });
-    const runData = await runResp.json();
-    if (!runResp.ok) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
+    const maxReviewFixAttempts = 3;
+    const attempts: TaskAttempt[] = [];
+    let currentOutput: WorkerOutput | null = null;
+    let currentReview: ReviewOutput | null = null;
+    for (let attempt = 1; attempt <= maxReviewFixAttempts; attempt += 1) {
+      const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: currentOutput, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+      const runData: { output: WorkerOutput; error?: string } = await runResp.json();
+      if (!runResp.ok) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
+      currentOutput = runData.output;
+      setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> }]);
 
-    outputStore[task.id] = runData.output;
-    setWorkerOutputs((prev) => ({ ...prev, [task.id]: runData.output }));
+      const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+      const reviewData: { review: ReviewOutput; error?: string } = await reviewResp.json();
+      if (!reviewResp.ok) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
+      currentReview = reviewData.review;
+      setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
 
-    const reviewResp = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: runData.output }) });
-    const reviewData = await reviewResp.json();
-    if (!reviewResp.ok) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
+      const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: Boolean(currentReview?.passed) };
+      if (currentReview.passed) {
+        attempts.push(attemptItem);
+        break;
+      }
+      const coordinatorResp = await fetch("/api/fix-brief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, requirement, task, attempt, previousOutput: currentOutput, review: currentReview }) });
+      const coordinatorData = await coordinatorResp.json();
+      if (!coordinatorResp.ok) throw new Error(coordinatorData.error || `协调失败: ${coordinatorResp.status}`);
+      const fixBrief: FixBrief = coordinatorData.fixBrief;
+      attemptItem.fixBrief = fixBrief;
+      setCommunicationLog((prev) => [...prev, { taskId: task.id, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> }]);
+      attempts.push(attemptItem);
+    }
 
-    reviewStore[task.id] = reviewData.review;
-    setReviews((prev) => ({ ...prev, [task.id]: reviewData.review }));
+    if (!currentOutput || !currentReview) throw new Error(`任务 ${task.id} 没有产生有效结果`);
+    outputStore[task.id] = currentOutput;
+    reviewStore[task.id] = currentReview;
+    setWorkerOutputs((prev) => ({ ...prev, [task.id]: currentOutput }));
+    setReviews((prev) => ({ ...prev, [task.id]: currentReview }));
+    setTaskAttempts((prev) => ({ ...prev, [task.id]: attempts }));
   }
 
   async function executeTasksAndIntegrate(currentPlan: ProjectPlan) {
@@ -107,7 +133,7 @@ export default function HomePage() {
       setLoading("integrating");
       const workerList = Object.values(outputStore);
       const reviewList = Object.values(reviewStore);
-      const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: workerList, reviews: reviewList }) });
+      const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: workerList, reviews: reviewList, taskAttempts: Object.values(taskAttempts).flat() }) });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || `整合失败: ${resp.status}`);
       setIntegration(data.integration);
@@ -135,6 +161,8 @@ export default function HomePage() {
       setPlan(d.plan);
       setWorkerOutputs({});
       setReviews({});
+      setTaskAttempts({});
+      setCommunicationLog([]);
       setIntegration(null);
       setProgress({ total: 1, done: 1, phase: "planned" });
 
@@ -153,7 +181,7 @@ export default function HomePage() {
       const resp = await fetch("/api/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ format, plan, workerOutputs: Object.values(workerOutputs), reviews: Object.values(reviews), integration }),
+        body: JSON.stringify({ format, plan, workerOutputs: Object.values(workerOutputs), reviews: Object.values(reviews), integration, taskAttempts: Object.values(taskAttempts).flat(), communicationLog }),
       });
 
       if (!resp.ok) {
@@ -222,7 +250,13 @@ export default function HomePage() {
         <div>{t.description}</div>
         <div>Worker: {t.workerType}</div>
         <div>Status: {taskStatus[t.id]}</div>
+        <details>
+          <summary>Attempt 历史</summary>
+          <pre>{JSON.stringify(taskAttempts[t.id] || [], null, 2)}</pre>
+        </details>
       </div>)}
+      <h3>Agent Communication Log</h3>
+      <pre>{JSON.stringify(communicationLog, null, 2)}</pre>
       <h3>Worker 输出</h3>
       <pre>{JSON.stringify(workerOutputs, null, 2)}</pre>
       <h3>Reviewer 反馈</h3>

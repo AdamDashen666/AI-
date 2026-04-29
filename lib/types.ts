@@ -36,6 +36,35 @@ export interface ReviewOutput {
   score: number;
 }
 
+export interface FixBrief {
+  taskId: string;
+  attempt: number;
+  rootCauses: string[];
+  requiredChanges: string[];
+  forbiddenChanges: string[];
+  qualityChecklist: string[];
+  messageToWorker: string;
+}
+
+export interface TaskAttempt {
+  attempt: number;
+  workerOutput: WorkerOutput;
+  review: ReviewOutput;
+  fixBrief?: FixBrief;
+  passed: boolean;
+}
+
+export type AgentRole = "worker" | "reviewer" | "coordinator";
+
+export interface CommunicationLogEntry {
+  taskId: string;
+  attempt: number;
+  from: AgentRole;
+  to: AgentRole;
+  timestamp: string;
+  payload: Record<string, unknown>;
+}
+
 export interface IntegrationOutput {
   projectName: string;
   status: "complete" | "in_progress" | "failed";
