@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { AIConfig, IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
 
 type TaskStatus = "idle" | "running" | "done" | "reviewed";
+type ExportFormat = "md" | "json" | "txt";
 
 export default function HomePage() {
   const [config, setConfig] = useState<AIConfig>({ baseURL: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o-mini" });
@@ -51,6 +52,44 @@ export default function HomePage() {
     setLoading("");
   }
 
+
+
+  async function exportResult(format: ExportFormat) {
+    if (!plan || !integration) return;
+    setLoading(`exporting ${format}`);
+    try {
+      const resp = await fetch("/api/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          format,
+          integration,
+          plan,
+          workerOutputs: Object.values(workerOutputs),
+          reviews: Object.values(reviews),
+        }),
+      });
+
+      if (!resp.ok) {
+        throw new Error(`Export failed: ${resp.status}`);
+      }
+
+      const blob = await resp.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const disposition = resp.headers.get("Content-Disposition");
+      const matched = disposition?.match(/filename=\"?([^\"]+)\"?/);
+      const fallback = `workflow-result.${format}`;
+      link.href = url;
+      link.download = matched?.[1] ?? fallback;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } finally {
+      setLoading("");
+    }
+  }
   async function integrate() {
     if (!plan) return;
     setLoading("integrating");
@@ -87,6 +126,11 @@ export default function HomePage() {
       <h3>Reviewer 反馈</h3>
       <pre>{JSON.stringify(reviews, null, 2)}</pre>
       <h3>最终合并结果</h3>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <button onClick={() => exportResult("md")} disabled={!integration || !plan || !!loading}>下载 Markdown</button>
+        <button onClick={() => exportResult("json")} disabled={!integration || !plan || !!loading}>下载 JSON</button>
+        <button onClick={() => exportResult("txt")} disabled={!integration || !plan || !!loading}>下载 TXT</button>
+      </div>
       <pre>{JSON.stringify(integration, null, 2)}</pre>
     </div>
   </div>;
