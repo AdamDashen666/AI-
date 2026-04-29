@@ -26,6 +26,15 @@ export default function HomePage() {
   const [models, setModels] = useState<string[]>([]);
   const [modelStatus, setModelStatus] = useState<string>("");
   const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<number>(2);
+  const [minimumReviewScore, setMinimumReviewScore] = useState<number>(80);
+  const [workerRoleCounts, setWorkerRoleCounts] = useState<Record<string, number>>({
+    ui: 1,
+    backend: 1,
+    research: 1,
+    code: 1,
+    test: 1,
+    integration: 1,
+  });
   const [useCustomWorkerModel, setUseCustomWorkerModel] = useState<boolean>(false);
   const [customWorkerModel, setCustomWorkerModel] = useState<string>("");
   const [progress, setProgress] = useState({ total: 0, done: 0, phase: "idle" });
@@ -129,8 +138,18 @@ export default function HomePage() {
         currentReview = reviewData.review;
         setCommunicationLog((prev) => [...prev, { taskId: taskKey, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> }]);
 
-        const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: Boolean(currentReview?.passed) };
-        if (currentReview.passed) {
+        const passedByScore = Number(currentReview.score) >= minimumReviewScore;
+        const isPassed = Boolean(currentReview?.passed) && passedByScore;
+        if (!passedByScore) {
+          currentReview = {
+            ...currentReview,
+            passed: false,
+            issues: [...(currentReview.issues || []), `评分 ${currentReview.score} 低于用户设置的最低分 ${minimumReviewScore}`],
+            suggestions: [...(currentReview.suggestions || []), "请针对问题逐条修复，并提高正确性、完整性和可维护性。"],
+          };
+        }
+        const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: isPassed };
+        if (isPassed) {
           appendLog("info", `任务 ${taskKey} 在第 ${attempt} 轮评审通过`);
           attempts.push(attemptItem);
           break;
@@ -272,7 +291,7 @@ export default function HomePage() {
     setErrorMessage("");
     setProgress({ total: 1, done: 0, phase: "planning" });
     try {
-      const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement }) });
+      const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement, workerQuotas: workerRoleCounts }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || `计划生成失败: ${r.status}`);
 
@@ -348,6 +367,24 @@ export default function HomePage() {
         最多同时运行 worker 数量：
         <input type="number" min={1} value={maxConcurrentWorkers} onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value) || 1)} />
       </label>
+      <label>
+        最低评审分数（低于该分数将要求重做）：
+        <input type="number" min={0} max={100} value={minimumReviewScore} onChange={(e) => setMinimumReviewScore(Math.max(0, Math.min(100, Number(e.target.value) || 0)))} />
+      </label>
+      <div>
+        <div>按职位设置 AI 数量：</div>
+        {Object.keys(workerRoleCounts).map((role) => (
+          <label key={role} style={{ display: "block" }}>
+            {role}:
+            <input
+              type="number"
+              min={0}
+              value={workerRoleCounts[role]}
+              onChange={(e) => setWorkerRoleCounts((prev) => ({ ...prev, [role]: Math.max(0, Number(e.target.value) || 0) }))}
+            />
+          </label>
+        ))}
+      </div>
       <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
         <input type="checkbox" checked={useCustomWorkerModel} onChange={(e) => setUseCustomWorkerModel(e.target.checked)} style={{ width: 16, marginBottom: 0 }} />
         使用自定义 Worker 模型

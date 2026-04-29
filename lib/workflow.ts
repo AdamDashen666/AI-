@@ -1,6 +1,6 @@
 import { callAI, parseJsonWithFallback } from "./aiClient";
 import { coordinatorSystemPrompt, integratorSystemPrompt, plannerSystemPrompt, reviewerFixSystemPrompt, reviewerSystemPrompt, workerFixSystemPrompt, workerSystemPrompt } from "./prompts";
-import { AIConfig, FixBrief, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "./types";
+import { AIConfig, FixBrief, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput, WorkerQuota, WorkerType } from "./types";
 
 function normalizeTask(task: Partial<PlanTask>, index: number): PlanTask {
   const fallbackId = `task_${index + 1}`;
@@ -13,12 +13,16 @@ function normalizeTask(task: Partial<PlanTask>, index: number): PlanTask {
   };
 }
 
-export async function createPlan(config: AIConfig, requirement: string, maxTasks: number): Promise<ProjectPlan> {
+export async function createPlan(config: AIConfig, requirement: string, maxTasks: number, workerQuotas?: Partial<WorkerQuota>): Promise<ProjectPlan> {
+  const workerTypes: WorkerType[] = ["ui", "backend", "research", "code", "test", "integration"];
+  const quotaText = workerTypes
+    .map((type) => `- ${type}: ${Math.max(0, Number(workerQuotas?.[type] ?? 1))}`)
+    .join("\n");
   const fallback: ProjectPlan = { projectName: "Untitled Project", summary: requirement, tasks: [] };
   const raw = await callAI(
     config,
     plannerSystemPrompt,
-    `Requirement:\n${requirement}\n\nConstraints:\n- Max task count: ${maxTasks}\n- Keep each task clear, independent, and executable\n- If project scope is small, you may return fewer than ${maxTasks} tasks\n\nReturn strict JSON only.`,
+    `Requirement:\n${requirement}\n\nConstraints:\n- Max task count: ${maxTasks}\n- Keep each task clear, independent, and executable\n- If project scope is small, you may return fewer than ${maxTasks} tasks\n- Respect the worker count limits by workerType when assigning tasks\nWorker count limits:\n${quotaText}\n\nReturn strict JSON only.`,
   );
   const plan = parseJsonWithFallback(raw, fallback);
   const rawTasks = Array.isArray(plan.tasks) ? plan.tasks.slice(0, maxTasks) : [];

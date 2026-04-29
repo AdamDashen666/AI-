@@ -86,3 +86,5 @@ export interface WorkflowSettings {
   maxTasks: number;
   maxWorkers: number;
 }
+
+export type WorkerQuota = Record<WorkerType, number>;
