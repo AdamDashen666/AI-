@@ -44,7 +44,7 @@ function buildMarkdownContent(body: Omit<ExportRequestBody, "format">): string {
     })
     .join("\n");
 
-  return ["# Workflow Result", "", "## Project Name", plan.projectName, "", "## Summary", integration.summary, "", "## Final Result", integration.finalResult, "", "## Changelog", ...(safeList(integration.changelog).length ? safeList(integration.changelog).map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(safeList(integration.remainingProblems).length ? safeList(integration.remainingProblems).map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(safeList(integration.nextSteps).length ? safeList(integration.nextSteps).map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback", reviewSection || "- N/A"].join("\n");
+  return ["# Workflow Result", "", "## Project Name", integration.projectName || plan.projectName || "N/A", "", "## Status", integration.status || "in_progress", "", "## Summary", integration.summary || "N/A", "", "## Final Result", integration.finalResult || "N/A", "", "## Changelog", ...(safeList(integration.changelog).length ? safeList(integration.changelog).map((item) => `- ${item}`) : ["- N/A"]), "", "## Remaining Problems", ...(safeList(integration.remainingProblems).length ? safeList(integration.remainingProblems).map((item) => `- ${item}`) : ["- N/A"]), "", "## Next Steps", ...(safeList(integration.nextSteps).length ? safeList(integration.nextSteps).map((item) => `- ${item}`) : ["- N/A"]), "", "## Worker Outputs", workerSection || "- N/A", "", "## Reviewer Feedback", reviewSection || "- N/A"].join("\n");
 }
 
 function buildTextContent(body: Omit<ExportRequestBody, "format">): string {
@@ -58,6 +58,9 @@ export async function POST(req: Request) {
 
     if (!["md", "json", "txt", "zip"].includes(format)) {
       return NextResponse.json({ error: "Invalid format" }, { status: 400 });
+    }
+    if (integration.status !== "complete") {
+      return NextResponse.json({ error: "Integration is not complete. Export is blocked." }, { status: 400 });
     }
 
     const timestamp = getTimestampParts(new Date());
@@ -75,6 +78,13 @@ export async function POST(req: Request) {
 
     if (format === "zip") {
       const zip = new JSZip();
+      (integration.files || []).forEach((file) => {
+        if (file?.path?.trim()) {
+          zip.file(file.path, file.content ?? "");
+        }
+      });
+      zip.file("README.md", markdownContent);
+      zip.file("workflow-data.json", JSON.stringify({ integration, plan, workerOutputs, reviews }, null, 2));
       zip.file(`${filenameBase}.md`, markdownContent);
       zip.file(`${filenameBase}.txt`, txtContent);
       zip.file(`${filenameBase}.json`, JSON.stringify({ integration, plan, workerOutputs, reviews }, null, 2));
