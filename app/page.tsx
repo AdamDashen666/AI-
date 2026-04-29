@@ -156,7 +156,17 @@ export default function HomePage() {
           : {};
         const dependencyOutputsPayload = normalizePreviousOutput(dependencyOutputMap);
         appendCommunicationLog({ taskId: taskKey, attempt, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { previousOutput: previousOutputPayload, dependencyOutputs: dependencyOutputsPayload } });
-        const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, requirement, attempt, previousOutput: previousOutputPayload, dependencyOutputs: dependencyOutputsPayload, previousReview: currentReview, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+        const runTaskBody = {
+          config: activeConfig,
+          task,
+          requirement,
+          attempt,
+          dependencyOutputs: dependencyOutputsPayload,
+          previousOutput: previousOutputPayload,
+          ...(attempt > 1 && currentReview ? { previousReview: currentReview } : {}),
+          ...(attempt > 1 && attempts[attempts.length - 1]?.fixBrief ? { fixBrief: attempts[attempts.length - 1].fixBrief } : {}),
+        };
+        const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(runTaskBody) });
         const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
         if (!runResp.ok || !runData.output) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
         currentOutput = runData.output;
@@ -375,9 +385,9 @@ export default function HomePage() {
         stack: (error as Error).stack || "",
       };
       setErrorMessage((error as Error).message);
-      appendCommunicationLog({ taskId: "final", attempt: 1, from: "system", to: "user", timestamp: new Date().toISOString(), payload: { event: "integration_to_final", status: "failed", error: (error as Error).message } });
-      appendLog("error", "最终组装失败", detail);
       const hasBlockedTasks = Object.values(outputStore).some((output) => output?.result === "blocked");
+      appendCommunicationLog({ taskId: "final", attempt: 1, from: "system", to: "user", timestamp: new Date().toISOString(), payload: { event: "integration_to_final", status: hasBlockedTasks ? "blocked" : "failed", error: (error as Error).message } });
+      appendLog("error", "最终组装失败", detail);
       setProgress((prev) => ({ ...prev, phase: hasBlockedTasks ? "blocked" : "failed" }));
     } finally {
       setLoading("");

@@ -127,7 +127,9 @@ export function validateRunTaskRequest(body: unknown): ValidationResult<{ config
   let fixBrief: FixBrief | undefined;
   let dependencyOutputs: Record<string, unknown> | undefined;
   let previousOutputContext: Record<string, unknown> | undefined;
-  if (body.previousOutput !== undefined) {
+  if (body.previousOutput === null) {
+    previousOutput = {};
+  } else if (body.previousOutput !== undefined) {
     if (!isObject(body.previousOutput)) return invalid("previousOutput must be an object");
     previousOutput = body.previousOutput;
   }
@@ -139,8 +141,8 @@ export function validateRunTaskRequest(body: unknown): ValidationResult<{ config
     if (!isObject(body.previousOutputContext)) return invalid("previousOutputContext must be an object");
     previousOutputContext = body.previousOutputContext;
   }
-  if (body.previousReview !== undefined) { const r = validateReviewOutput(body.previousReview, "previousReview"); if (!r.ok) return r; previousReview = r.data; }
-  if (body.fixBrief !== undefined) { const r = validateFixBrief(body.fixBrief, "fixBrief"); if (!r.ok) return r; fixBrief = r.data; }
+  if (body.previousReview !== null && body.previousReview !== undefined) { const r = validateReviewOutput(body.previousReview, "previousReview"); if (!r.ok) return r; previousReview = r.data; }
+  if (body.fixBrief !== null && body.fixBrief !== undefined) { const r = validateFixBrief(body.fixBrief, "fixBrief"); if (!r.ok) return r; fixBrief = r.data; }
   return { ok: true, data: { config: config.data, task: task.data, requirement: body.requirement, attempt: body.attempt as number | undefined, previousOutput, previousReview, fixBrief, dependencyOutputs, previousOutputContext } };
 }
 
