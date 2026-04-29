@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
 
-type TaskStatus = "idle" | "done" | "reviewed";
+type TaskStatus = "idle" | "waiting_dependencies" | "done" | "reviewed";
 type ExportFormat = "md" | "json" | "txt" | "zip";
 
 function normalizeTaskKey(taskId: unknown): string {
@@ -30,11 +30,19 @@ export default function HomePage() {
 
   const taskStatus = useMemo(() => {
     const map: Record<string, TaskStatus> = {};
+    const reviewedTaskIds = new Set(Object.keys(reviews));
     plan?.tasks.forEach((t) => {
       const taskKey = normalizeTaskKey(t.id);
-      if (reviews[taskKey]) map[taskKey] = "reviewed";
-      else if (workerOutputs[taskKey]) map[taskKey] = "done";
-      else map[taskKey] = "idle";
+      const dependencies = Array.isArray(t.dependencies) ? t.dependencies.map((dep) => normalizeTaskKey(dep)) : [];
+      if (reviews[taskKey]) {
+        map[taskKey] = "reviewed";
+      } else if (workerOutputs[taskKey]) {
+        map[taskKey] = "done";
+      } else if (dependencies.length > 0 && dependencies.some((dep) => !reviewedTaskIds.has(dep))) {
+        map[taskKey] = "waiting_dependencies";
+      } else {
+        map[taskKey] = "idle";
+      }
     });
     return map;
   }, [plan, workerOutputs, reviews]);
@@ -149,18 +157,69 @@ export default function HomePage() {
     setProgress({ total: selectedTasks.length + 1, done: 0, phase: "running" });
 
     try {
-      let index = 0;
+      const taskMap = new Map(selectedTasks.map((task) => [normalizeTaskKey(task.id), task]));
+      const dependencyMap = new Map<string, string[]>();
+      for (const task of selectedTasks) {
+        const taskKey = normalizeTaskKey(task.id);
+        const deps = Array.isArray(task.dependencies) ? task.dependencies.map((dep) => normalizeTaskKey(dep)) : [];
+        for (const dep of deps) {
+          if (!taskMap.has(dep)) {
+            throw new Error(`任务 ${task.id} 依赖缺失：${dep}`);
+          }
+        }
+        dependencyMap.set(taskKey, deps);
+      }
+
+      const completedTaskIds = new Set<string>();
+      const scheduledTaskIds = new Set<string>();
+      const pendingQueue = new Set<string>(taskMap.keys());
+      const getReadyTaskId = () => {
+        for (const taskId of pendingQueue) {
+          const deps = dependencyMap.get(taskId) || [];
+          if (deps.every((dep) => completedTaskIds.has(dep))) {
+            return taskId;
+          }
+        }
+        return null;
+      };
+      const markTaskCompleted = (taskId: string) => {
+        completedTaskIds.add(taskId);
+        pendingQueue.delete(taskId);
+      };
+
       const workers = Array.from({ length: Math.min(concurrency, selectedTasks.length) }, async () => {
         while (true) {
-          const current = index;
-          index += 1;
-          if (current >= selectedTasks.length) break;
-          const attempts = await executeOneTask(selectedTasks[current], activeConfig, outputStore, reviewStore);
+          const nextTaskId = getReadyTaskId();
+          if (!nextTaskId) {
+            if (completedTaskIds.size === selectedTasks.length) break;
+            if (scheduledTaskIds.size === completedTaskIds.size) {
+              const blocked = Array.from(pendingQueue);
+              throw new Error(`检测到循环依赖，阻塞任务：${blocked.join(", ")}`);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            continue;
+          }
+          if (scheduledTaskIds.has(nextTaskId)) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            continue;
+          }
+          const task = taskMap.get(nextTaskId);
+          if (!task) throw new Error(`任务不存在：${nextTaskId}`);
+          scheduledTaskIds.add(nextTaskId);
+          const attempts = await executeOneTask(task, activeConfig, outputStore, reviewStore);
+          markTaskCompleted(nextTaskId);
           allAttempts.push(...attempts);
           setProgress((prev) => ({ ...prev, done: prev.done + 1 }));
         }
       });
       await Promise.all(workers);
+
+      const unfinishedTasks = selectedTasks
+        .map((task) => normalizeTaskKey(task.id))
+        .filter((taskId) => !outputStore[taskId] || !reviewStore[taskId]);
+      if (unfinishedTasks.length > 0) {
+        throw new Error(`存在未完成任务，无法进入集成阶段：${unfinishedTasks.join(", ")}`);
+      }
 
       setLoading("integrating");
       const workerList = Object.values(outputStore);
