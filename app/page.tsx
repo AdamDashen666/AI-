@@ -68,7 +68,7 @@ export default function HomePage() {
     activeConfig: AIConfig,
     outputStore: Record<string, WorkerOutput>,
     reviewStore: Record<string, ReviewOutput>,
-  ) {
+  ): Promise<TaskAttempt[]> {
     const maxReviewFixAttempts = 3;
     const attempts: TaskAttempt[] = [];
     let currentOutput: WorkerOutput | null = null;
@@ -106,6 +106,7 @@ export default function HomePage() {
     setWorkerOutputs((prev) => ({ ...prev, [task.id]: currentOutput }));
     setReviews((prev) => ({ ...prev, [task.id]: currentReview }));
     setTaskAttempts((prev) => ({ ...prev, [task.id]: attempts }));
+    return attempts;
   }
 
   async function executeTasksAndIntegrate(currentPlan: ProjectPlan) {
@@ -115,6 +116,7 @@ export default function HomePage() {
     const selectedTasks = currentPlan.tasks;
     const outputStore: Record<string, WorkerOutput> = {};
     const reviewStore: Record<string, ReviewOutput> = {};
+    const allAttempts: TaskAttempt[] = [];
     setProgress({ total: selectedTasks.length + 1, done: 0, phase: "running" });
 
     try {
@@ -124,7 +126,8 @@ export default function HomePage() {
           const current = index;
           index += 1;
           if (current >= selectedTasks.length) break;
-          await executeOneTask(selectedTasks[current], activeConfig, outputStore, reviewStore);
+          const attempts = await executeOneTask(selectedTasks[current], activeConfig, outputStore, reviewStore);
+          allAttempts.push(...attempts);
           setProgress((prev) => ({ ...prev, done: prev.done + 1 }));
         }
       });
@@ -133,7 +136,7 @@ export default function HomePage() {
       setLoading("integrating");
       const workerList = Object.values(outputStore);
       const reviewList = Object.values(reviewStore);
-      const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: workerList, reviews: reviewList, taskAttempts: Object.values(taskAttempts).flat() }) });
+      const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: workerList, reviews: reviewList, taskAttempts: allAttempts }) });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.error || `整合失败: ${resp.status}`);
       setIntegration(data.integration);
