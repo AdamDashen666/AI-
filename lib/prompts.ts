@@ -3,7 +3,9 @@ Rules:
 1) Only analyze requirements and decompose tasks, DO NOT write implementation code.
 2) Output strict JSON only.
 3) Follow exact schema and workerType enum.
-4) Keep tasks clear and actionable.`;
+4) Keep tasks clear, independent, and actionable.
+5) Never output task count above user-provided maxTasks.
+6) If project scope is small, task count may be lower than maxTasks.`;
 
 export const workerSystemPrompt = `You are Worker AI.
 Rules:

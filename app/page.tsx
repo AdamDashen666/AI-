@@ -1,137 +1,143 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { AIConfig, IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput } from "@/lib/types";
+import { AIConfig, IntegrationOutput, ProjectPlan, ReviewOutput, WorkerOutput, WorkflowSettings } from "@/lib/types";
 
-type TaskStatus = "idle" | "running" | "done" | "reviewed";
-type ExportFormat = "md" | "json" | "txt";
+type TaskStatus = "idle" | "running" | "done" | "reviewed" | "failed";
+type ExportFormat = "md" | "json" | "txt" | "zip";
 
 export default function HomePage() {
-  const [config, setConfig] = useState<AIConfig>({ baseURL: "https://api.openai.com/v1", apiKey: "", model: "gpt-4o-mini" });
+  const [config, setConfig] = useState<AIConfig>({ baseURL: "https://api.openai.com/v1", apiKey: "", model: "" });
+  const [settings, setSettings] = useState<WorkflowSettings>({ retryCount: 1, maxTasks: 5, maxWorkers: 3 });
   const [requirement, setRequirement] = useState("");
   const [plan, setPlan] = useState<ProjectPlan | null>(null);
   const [workerOutputs, setWorkerOutputs] = useState<Record<string, WorkerOutput>>({});
   const [reviews, setReviews] = useState<Record<string, ReviewOutput>>({});
   const [integration, setIntegration] = useState<IntegrationOutput | null>(null);
   const [loading, setLoading] = useState<string>("");
+  const [errorMessage, setErrorMessage] = useState<string>("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [models, setModels] = useState<string[]>([]);
+  const [modelStatus, setModelStatus] = useState<string>("");
+  const [runningWorkers, setRunningWorkers] = useState(0);
+  const [completedTasks, setCompletedTasks] = useState(0);
+  const [failedTasks, setFailedTasks] = useState(0);
+  const [currentRetryAttempt, setCurrentRetryAttempt] = useState(0);
 
   const taskStatus = useMemo(() => {
     const map: Record<string, TaskStatus> = {};
     plan?.tasks.forEach((t) => {
-      if (reviews[t.id]) map[t.id] = "reviewed";
+      if (errors[t.id]) map[t.id] = "failed";
+      else if (reviews[t.id]) map[t.id] = "reviewed";
       else if (workerOutputs[t.id]) map[t.id] = "done";
       else map[t.id] = "idle";
     });
     return map;
-  }, [plan, workerOutputs, reviews]);
+  }, [plan, workerOutputs, reviews, errors]);
+
+  async function refreshModels() { /* unchanged */
+    setModelStatus("正在刷新模型..."); setErrorMessage("");
+    try {
+      const resp = await fetch("/api/models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseURL: config.baseURL, apiKey: config.apiKey }) });
+      const data = await resp.json(); if (!resp.ok) throw new Error(data.error || `刷新失败: ${resp.status}`);
+      const modelIds = Array.isArray(data.models) ? data.models : [];
+      setModels(modelIds);
+      if (modelIds.length > 0 && !modelIds.includes(config.model)) setConfig({ ...config, model: modelIds[0] });
+      setModelStatus("刷新成功");
+    } catch (error) { setModelStatus(`刷新失败：${(error as Error).message}`); setErrorMessage((error as Error).message); }
+  }
 
   async function generatePlan() {
-    setLoading("planning");
-    const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement }) });
-    const d = await r.json();
-    setPlan(d.plan);
-    setWorkerOutputs({}); setReviews({}); setIntegration(null); setLoading("");
+    if (!config.model.trim()) { setErrorMessage("请先选择或输入模型后再生成计划。"); return; }
+    setLoading("planning"); setErrorMessage("");
+    try {
+      const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement, maxTasks: settings.maxTasks }) });
+      const d = await r.json(); if (!r.ok) throw new Error(d.error || `计划生成失败: ${r.status}`);
+      setPlan(d.plan); setWorkerOutputs({}); setReviews({}); setErrors({}); setIntegration(null);
+      setCompletedTasks(0); setFailedTasks(0); setCurrentRetryAttempt(0); setRunningWorkers(0);
+    } catch (error) { setErrorMessage((error as Error).message); }
+    finally { setLoading(""); }
   }
 
   async function executeTasks() {
     if (!plan) return;
-    setLoading("running tasks");
-    const outputs: Record<string, WorkerOutput> = {};
-    const reviewMap: Record<string, ReviewOutput> = {};
-    for (const task of plan.tasks) {
-      const runResp = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, requirement }) });
-      const runData = await runResp.json();
-      outputs[task.id] = runData.output;
-      setWorkerOutputs({ ...outputs });
-
-      const reviewResp = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, output: runData.output }) });
-      const reviewData = await reviewResp.json();
-      reviewMap[task.id] = reviewData.review;
-      setReviews({ ...reviewMap });
-    }
-    setLoading("");
-  }
-
-
-
-  async function exportResult(format: ExportFormat) {
-    if (!plan || !integration) return;
-    setLoading(`exporting ${format}`);
+    setLoading("running tasks"); setErrorMessage("");
     try {
-      const resp = await fetch("/api/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          format,
-          integration,
-          plan,
-          workerOutputs: Object.values(workerOutputs),
-          reviews: Object.values(reviews),
-        }),
-      });
+      const outputs: Record<string, WorkerOutput> = { ...workerOutputs };
+      const reviewMap: Record<string, ReviewOutput> = { ...reviews };
+      const errorMap: Record<string, string> = { ...errors };
+      let nextIndex = 0;
 
-      if (!resp.ok) {
-        throw new Error(`Export failed: ${resp.status}`);
-      }
+      const runner = async () => {
+        while (nextIndex < plan.tasks.length) {
+          const task = plan.tasks[nextIndex++];
+          setRunningWorkers((v) => v + 1);
+          setCurrentRetryAttempt(1);
+          try {
+            const runResp = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, requirement }) });
+            const runData = await runResp.json();
+            if (!runResp.ok) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
+            outputs[task.id] = runData.output;
+            setWorkerOutputs({ ...outputs });
 
-      const blob = await resp.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      const disposition = resp.headers.get("Content-Disposition");
-      const matched = disposition?.match(/filename=\"?([^\"]+)\"?/);
-      const fallback = `workflow-result.${format}`;
-      link.href = url;
-      link.download = matched?.[1] ?? fallback;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+            const reviewResp = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, task, output: runData.output }) });
+            const reviewData = await reviewResp.json();
+            if (!reviewResp.ok) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
+            reviewMap[task.id] = reviewData.review;
+            setReviews({ ...reviewMap });
+            setCompletedTasks((v) => v + 1);
+          } catch (error) {
+            errorMap[task.id] = (error as Error).message;
+            setErrors({ ...errorMap });
+            setFailedTasks((v) => v + 1);
+          } finally {
+            setRunningWorkers((v) => Math.max(0, v - 1));
+            setCurrentRetryAttempt(0);
+          }
+        }
+      };
+
+      const concurrency = Math.min(Math.max(1, settings.maxWorkers), 20);
+      await Promise.all(Array.from({ length: Math.min(concurrency, plan.tasks.length) }, () => runner()));
+    } catch (error) {
+      setErrorMessage((error as Error).message);
     } finally {
       setLoading("");
     }
   }
-  async function integrate() {
-    if (!plan) return;
-    setLoading("integrating");
-    const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, plan, workerOutputs: Object.values(workerOutputs), reviews: Object.values(reviews) }) });
-    const data = await resp.json();
-    setIntegration(data.integration);
-    setLoading("");
+
+  async function downloadExport(format: ExportFormat) {
+    if (!plan || !integration) return;
+    setLoading(`exporting ${format}`); setErrorMessage("");
+    try {
+      const resp = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ format, integration, plan, settings, workerOutputs: Object.values(workerOutputs), reviews: Object.values(reviews) }) });
+      if (!resp.ok) { const errorBody = await resp.json().catch(() => null); throw new Error(errorBody?.error || `Export failed: ${resp.status}`); }
+      const blob = await resp.blob(); const url = window.URL.createObjectURL(blob); const link = document.createElement("a");
+      const disposition = resp.headers.get("Content-Disposition"); const matched = disposition?.match(/filename=\"?([^\"]+)\"?/); const fallback = `workflow-result.${format}`;
+      link.href = url; link.download = matched?.[1] ?? fallback; document.body.appendChild(link); link.click(); link.remove(); window.URL.revokeObjectURL(url);
+    } catch (error) { setErrorMessage((error as Error).message); }
+    finally { setLoading(""); }
   }
 
-  return <div className="container">
-    <div className="panel">
-      <h2>AI Multi-Agent Workflow MVP</h2>
-      <input placeholder="API Base URL" value={config.baseURL} onChange={(e)=>setConfig({...config,baseURL:e.target.value})}/>
-      <input placeholder="API Key" type="password" value={config.apiKey} onChange={(e)=>setConfig({...config,apiKey:e.target.value})}/>
-      <input placeholder="Model Name" value={config.model} onChange={(e)=>setConfig({...config,model:e.target.value})}/>
-      <textarea rows={8} placeholder="输入你的项目需求..." value={requirement} onChange={(e)=>setRequirement(e.target.value)} />
-      <button onClick={generatePlan} disabled={!requirement || !config.apiKey || !!loading}>生成计划</button>
-      <button onClick={executeTasks} disabled={!plan || !!loading}>执行任务</button>
-      <button onClick={integrate} disabled={!plan || !!loading}>合并结果</button>
-      <div className="status">状态：{loading || "idle"}</div>
-    </div>
-    <div className="panel grid">
-      <h3>项目计划</h3>
-      <pre>{JSON.stringify(plan, null, 2)}</pre>
-      <h3>任务</h3>
-      {plan?.tasks.map(t => <div key={t.id} className="card">
-        <strong>{t.id} - {t.name}</strong>
-        <div>{t.description}</div>
-        <div>Worker: {t.workerType}</div>
-        <div>Status: {taskStatus[t.id]}</div>
-      </div>)}
-      <h3>Worker 输出</h3>
-      <pre>{JSON.stringify(workerOutputs, null, 2)}</pre>
-      <h3>Reviewer 反馈</h3>
-      <pre>{JSON.stringify(reviews, null, 2)}</pre>
-      <h3>最终合并结果</h3>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <button onClick={() => exportResult("md")} disabled={!integration || !plan || !!loading}>下载 Markdown</button>
-        <button onClick={() => exportResult("json")} disabled={!integration || !plan || !!loading}>下载 JSON</button>
-        <button onClick={() => exportResult("txt")} disabled={!integration || !plan || !!loading}>下载 TXT</button>
-      </div>
-      <pre>{JSON.stringify(integration, null, 2)}</pre>
-    </div>
-  </div>;
+  async function integrate() { if (!plan) return; setLoading("integrating"); setErrorMessage(""); try {
+    const resp = await fetch("/api/integrate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, plan, workerOutputs: Object.values(workerOutputs), reviews: Object.values(reviews) }) });
+    const data = await resp.json(); if (!resp.ok) throw new Error(data.error || `整合失败: ${resp.status}`); setIntegration(data.integration);
+  } catch (error) { setErrorMessage((error as Error).message); } finally { setLoading(""); } }
+
+  return <div className="container"><div className="panel"><h2>AI Multi-Agent Workflow MVP</h2>
+    <input placeholder="API Base URL" value={config.baseURL} onChange={(e)=>setConfig({...config,baseURL:e.target.value})}/>
+    <input placeholder="API Key" type="password" value={config.apiKey} onChange={(e)=>setConfig({...config,apiKey:e.target.value})}/>
+    <button onClick={refreshModels} disabled={!config.apiKey || !!loading}>刷新模型</button>
+    {models.length > 0 ? <select value={config.model} onChange={(e)=>setConfig({...config,model:e.target.value})}>{models.map((m)=><option key={m} value={m}>{m}</option>)}</select> : null}
+    <input placeholder="Model Name (fallback)" value={config.model} onChange={(e)=>setConfig({...config,model:e.target.value})}/>
+    <input type="number" min={1} max={50} value={settings.maxTasks} onChange={(e)=>setSettings({...settings,maxTasks: Math.min(50, Math.max(1, Number(e.target.value)||1))})} placeholder="Max Tasks" />
+    <input type="number" min={1} max={20} value={settings.maxWorkers} onChange={(e)=>setSettings({...settings,maxWorkers: Math.min(20, Math.max(1, Number(e.target.value)||1))})} placeholder="Max Workers" />
+    <div className="status">模型状态：{modelStatus || "idle"}</div>
+    <div className="status">Max Tasks: {settings.maxTasks} | Max Workers: {settings.maxWorkers}</div>
+    <div className="status">总任务数: {plan?.tasks.length || 0} | 运行中 Worker: {runningWorkers} | 已完成: {completedTasks} | 失败: {failedTasks} | 当前重试: {currentRetryAttempt}</div>
+    <textarea rows={8} placeholder="输入你的项目需求..." value={requirement} onChange={(e)=>setRequirement(e.target.value)} />
+    <button onClick={generatePlan} disabled={!requirement || !config.apiKey || !config.model.trim() || !!loading}>生成计划</button><button onClick={executeTasks} disabled={!plan || !!loading}>执行任务</button><button onClick={integrate} disabled={!plan || !!loading}>合并结果</button>
+    <div className="status">状态：{loading || "idle"}</div>{errorMessage ? <div className="status" style={{ color: "#b00020" }}>错误：{errorMessage}</div> : null}
+  </div><div className="panel grid"><h3>项目计划</h3><pre>{JSON.stringify(plan, null, 2)}</pre><h3>任务</h3>{plan?.tasks.map(t => <div key={t.id} className="card"><strong>{t.id} - {t.name}</strong><div>{t.description}</div><div>Worker: {t.workerType}</div><div>Status: {taskStatus[t.id]}</div>{errors[t.id] ? <div style={{ color: "#b00020" }}>Error: {errors[t.id]}</div> : null}</div>)}
+  <h3>Worker 输出</h3><pre>{JSON.stringify(workerOutputs, null, 2)}</pre><h3>Reviewer 反馈</h3><pre>{JSON.stringify(reviews, null, 2)}</pre><h3>最终合并结果</h3><div style={{ display: "flex", gap: 8, marginBottom: 8 }}><button onClick={() => downloadExport("md")} disabled={!integration || !plan || !!loading}>下载 Markdown</button><button onClick={() => downloadExport("json")} disabled={!integration || !plan || !!loading}>下载 JSON</button><button onClick={() => downloadExport("txt")} disabled={!integration || !plan || !!loading}>下载 TXT</button><button onClick={() => downloadExport("zip")} disabled={!integration || !plan || !!loading}>下载 ZIP</button></div><pre>{JSON.stringify(integration, null, 2)}</pre></div></div>;
 }
