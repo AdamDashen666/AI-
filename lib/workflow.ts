@@ -2,6 +2,34 @@ import { callAI, parseJsonWithFallback } from "./aiClient";
 import { coordinatorSystemPrompt, integratorSystemPrompt, plannerSystemPrompt, reviewerFixSystemPrompt, reviewerSystemPrompt, workerFixSystemPrompt, workerSystemPrompt } from "./prompts";
 import { AIConfig, FixBrief, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput, WorkerQuota, WorkerType } from "./types";
 
+type ChangedFile = NonNullable<WorkerOutput["changedFiles"]>[number];
+
+function normalizeChangedFiles(value: unknown): ChangedFile[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => ({ path: String((item as any)?.path ?? ""), content: String((item as any)?.content ?? "") }))
+      .filter((item) => item.path.trim().length > 0);
+  }
+  return [];
+}
+
+function migrateLegacyWorkerOutput(parsed: Record<string, unknown>, task: PlanTask): WorkerOutput {
+  const legacyFullResult = parsed.fullUpdatedResult ?? parsed["full updated result"] ?? parsed.completeGameCode ?? parsed.fullGameCode ?? parsed.implementation;
+  const changedFilesFromLegacy = typeof legacyFullResult === "string" && legacyFullResult.trim().length > 0
+    ? [{ path: "index.html", content: legacyFullResult }]
+    : [];
+  return {
+    taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : task.id,
+    result: typeof parsed.result === "string" ? parsed.result : "",
+    filesSuggested: Array.isArray(parsed.filesSuggested) ? parsed.filesSuggested.map(String) : [],
+    risks: Array.isArray(parsed.risks) ? parsed.risks.map(String) : [],
+    notes: typeof parsed.notes === "string" ? parsed.notes : "",
+    fixedIssues: Array.isArray(parsed.fixedIssues) ? parsed.fixedIssues.map(String) : [],
+    remainingRisks: Array.isArray(parsed.remainingRisks) ? parsed.remainingRisks.map(String) : [],
+    changedFiles: normalizeChangedFiles(parsed.changedFiles).length > 0 ? normalizeChangedFiles(parsed.changedFiles) : changedFilesFromLegacy,
+  };
+}
+
 function normalizeTask(task: Partial<PlanTask>, index: number): PlanTask {
   const fallbackId = `task_${index + 1}`;
   return {
@@ -33,8 +61,8 @@ export async function createPlan(config: AIConfig, requirement: string, maxTasks
 export async function runWorkerTask(config: AIConfig, task: PlanTask, requirement: string): Promise<WorkerOutput> {
   const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback", fixedIssues: [], remainingRisks: ["Invalid JSON"], changedFiles: [] };
   const raw = await callAI(config, workerSystemPrompt, `Project requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nReturn strict JSON only.`);
-  const parsed = parseJsonWithFallback(raw, fallback);
-  return { ...parsed, taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : task.id };
+  const parsed = parseJsonWithFallback<Record<string, unknown>>(raw, fallback as unknown as Record<string, unknown>);
+  return migrateLegacyWorkerOutput(parsed, task);
 }
 
 export async function reviewTask(config: AIConfig, task: PlanTask, workerOutput: WorkerOutput): Promise<ReviewOutput> {
@@ -72,13 +100,10 @@ export async function runWorkerFixTask(
 ): Promise<WorkerOutput> {
   const fallback: WorkerOutput = { taskId: task.id, result: "No valid JSON output.", filesSuggested: [], risks: ["Invalid JSON"], notes: "fallback", fixedIssues: [], remainingRisks: ["Invalid JSON"], changedFiles: [] };
   const raw = await callAI(config, workerFixSystemPrompt, `Original requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nPrevious worker output:\n${JSON.stringify(previousWorkerOutput, null, 2)}\n\nReviewer feedback:\n${JSON.stringify(review, null, 2)}\n\nFixBrief:\n${JSON.stringify(fixBrief, null, 2)}\n\nReturn strict JSON only.`);
-  const parsed = parseJsonWithFallback(raw, fallback);
+  const parsed = parseJsonWithFallback<Record<string, unknown>>(raw, fallback as unknown as Record<string, unknown>);
   return {
-    ...parsed,
+    ...migrateLegacyWorkerOutput(parsed, task),
     taskId: task.id,
-    fixedIssues: Array.isArray(parsed.fixedIssues) ? parsed.fixedIssues.map(String) : [],
-    remainingRisks: Array.isArray(parsed.remainingRisks) ? parsed.remainingRisks.map(String) : [],
-    changedFiles: Array.isArray(parsed.changedFiles) ? parsed.changedFiles.map(String) : [],
   };
 }
 

@@ -20,6 +20,10 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function isChangedFilesArray(value: unknown): value is Array<{ path: string; content: string }> {
+  return Array.isArray(value) && value.every((item) => isObject(item) && typeof item.path === "string" && typeof item.content === "string");
+}
+
 function isValidHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -57,7 +61,12 @@ function validateWorkerOutput(value: unknown, path: string): ValidationResult<Wo
   if (!isStringArray(filesSuggested)) return invalid(`${path}.filesSuggested must be a string[]`);
   if (!isStringArray(risks)) return invalid(`${path}.risks must be a string[]`);
   if (typeof notes !== "string") return invalid(`${path}.notes must be a string`);
-  return { ok: true, data: { taskId, result, filesSuggested, risks, notes } };
+  const changedFiles = isChangedFilesArray(value.changedFiles)
+    ? value.changedFiles
+    : (typeof value.fullUpdatedResult === "string" || typeof value["full updated result"] === "string" || typeof value.completeGameCode === "string" || typeof value.fullGameCode === "string" || typeof value.implementation === "string")
+      ? [{ path: "index.html", content: String(value.fullUpdatedResult ?? value["full updated result"] ?? value.completeGameCode ?? value.fullGameCode ?? value.implementation ?? "") }]
+      : [];
+  return { ok: true, data: { taskId, result, filesSuggested, risks, notes, changedFiles } };
 }
 
 function validateReviewOutput(value: unknown, path: string): ValidationResult<ReviewOutput> {
