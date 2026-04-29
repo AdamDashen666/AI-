@@ -62,7 +62,7 @@ export interface TaskAttempt {
   passed: boolean;
 }
 
-export type AgentRole = "worker" | "reviewer" | "coordinator";
+export type AgentRole = "worker" | "reviewer" | "coordinator" | "user" | "system";
 
 export interface CommunicationLogEntry {
   taskId: string;
