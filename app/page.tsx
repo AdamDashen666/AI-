@@ -325,17 +325,18 @@ export default function HomePage() {
 
       const workers = Array.from({ length: Math.min(concurrency, selectedTasks.length) }, async () => {
         while (true) {
-          const nextTaskId = getReadyTaskId();
+          const decisionResp = await fetch("/api/coordinator-decision", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: outputStore, reviews: reviewStore, taskAttempts, settings: { workerRoleCounts, minimumReviewScore, maxReviewFixAttempts } }) });
+          const decisionData = await decisionResp.json().catch(() => ({}));
+          const decision = decisionData.decision || { readyTaskIds: [], blockedTaskIds: [], retryTaskIds: [], stopReason: "", canIntegrate: false, notes: [] };
+          const nextTaskId = (decision.readyTaskIds || []).map((id: string) => normalizeTaskKey(id)).find((id: string) => pendingQueue.has(id) && !scheduledTaskIds.has(id)) || getReadyTaskId();
+          appendCommunicationLog({ taskId: "coordinator", attempt: 1, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: decision });
           if (!nextTaskId) {
             if (completedTaskIds.size === selectedTasks.length) break;
+            if (decision.stopReason) throw new Error(`Coordinator 停止：${decision.stopReason}`);
             if (scheduledTaskIds.size === completedTaskIds.size) {
               const blocked = Array.from(pendingQueue);
               throw new Error(`检测到循环依赖，阻塞任务：${blocked.join(", ")}`);
             }
-            await new Promise((resolve) => setTimeout(resolve, 10));
-            continue;
-          }
-          if (scheduledTaskIds.has(nextTaskId)) {
             await new Promise((resolve) => setTimeout(resolve, 10));
             continue;
           }
@@ -390,9 +391,15 @@ export default function HomePage() {
       if (blockedTasks.length > 0) {
         throw new Error(`存在未通过评审的任务，无法进入集成阶段：${blockedTasks.join(", ")}`);
       }
+      const finalDecisionResp = await fetch("/api/coordinator-decision", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, plan: currentPlan, workerOutputs: outputStore, reviews: reviewStore, taskAttempts, settings: { workerRoleCounts, minimumReviewScore, maxReviewFixAttempts } }) });
+      const finalDecisionData = await finalDecisionResp.json().catch(() => ({}));
+      if (!finalDecisionData?.decision?.canIntegrate) {
+        throw new Error(`Coordinator 禁止进入集成：${finalDecisionData?.decision?.stopReason || "未满足集成条件"}`);
+      }
 
       setLoading("integrating");
-      appendCommunicationLog({ taskId: "integration", attempt: 1, from: "worker", to: "system", timestamp: new Date().toISOString(), payload: { event: "workers_to_integration", taskCount: Object.keys(outputStore).length } });
+      appendCommunicationLog({ taskId: "integration", attempt: 1, from: "reviewer", to: "coordinator", timestamp: new Date().toISOString(), payload: { event: "all_reviews_collected", reviewCount: Object.keys(reviewStore).length } });
+      appendCommunicationLog({ taskId: "integration", attempt: 1, from: "coordinator", to: "integration", timestamp: new Date().toISOString(), payload: { event: "coordinator_to_integration", taskCount: Object.keys(outputStore).length } });
       setProgress((prev) => ({ ...prev, phase: "integrating" }));
       const workerList = Object.values(outputStore);
       const reviewList = Object.values(reviewStore);
