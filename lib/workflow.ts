@@ -101,12 +101,29 @@ export function getIntegrationBlockers(
       const output = outputStore[taskId];
       const review = reviewStore[taskId];
       if (!output || !review) return true;
-      const hasIssues = Array.isArray(review.issues) && review.issues.length > 0;
-      return !review.passed || Number(review.score) < minimumReviewScore || hasIssues;
+      const isPassed = isReviewPassed(review, minimumReviewScore);
+      return !isPassed;
     });
 }
 
 export { migrateLegacyWorkerOutput };
+
+export function isReviewPassed(review: Partial<ReviewOutput> | null | undefined, minimumReviewScore: number): boolean {
+  if (!review) return false;
+  return review.passed === true || (typeof review.score === "number" && review.score >= minimumReviewScore);
+}
+
+function normalizeReviewOutput(parsed: Partial<ReviewOutput>, taskId: string, minimumReviewScore = 80): ReviewOutput {
+  const score = Number.isFinite(parsed.score) ? Number(parsed.score) : 0;
+  const passed = parsed.passed === true || score >= minimumReviewScore;
+  return {
+    taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : taskId,
+    passed,
+    score,
+    issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
+    suggestions: Array.isArray(parsed.suggestions) ? parsed.suggestions.map(String) : [],
+  };
+}
 
 export async function createPlan(config: AIConfig, requirement: string, maxTasks: number, workerQuotas?: Partial<WorkerQuota>): Promise<ProjectPlan> {
   const workerTypes: WorkerType[] = ["ui", "backend", "research", "code", "test", "integration"];
@@ -141,11 +158,7 @@ export async function reviewTask(config: AIConfig, task: PlanTask, workerOutput:
   const fallback: ReviewOutput = { taskId: task.id, passed: false, issues: ["Invalid JSON"], suggestions: ["Retry review"], score: 0 };
   const raw = await callAI(config, reviewerSystemPrompt, `Task:\n${JSON.stringify(task, null, 2)}\n\nWorker output:\n${JSON.stringify(workerOutput, null, 2)}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback(raw, fallback);
-  return {
-    ...parsed,
-    taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : task.id,
-    score: Number.isFinite(parsed.score) ? parsed.score : 0,
-  };
+  return normalizeReviewOutput(parsed, task.id);
 }
 
 export async function createFixBrief(
@@ -187,7 +200,7 @@ export async function reviewFixTask(config: AIConfig, task: PlanTask, workerOutp
   const fallback: ReviewOutput = { taskId: task.id, passed: false, issues: ["Invalid JSON"], suggestions: ["Retry review"], score: 0 };
   const raw = await callAI(config, reviewerFixSystemPrompt, `Task:\n${JSON.stringify(task, null, 2)}\n\nWorker output:\n${JSON.stringify(workerOutput, null, 2)}\n\nFixBrief:\n${JSON.stringify(fixBrief, null, 2)}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback(raw, fallback);
-  return { ...parsed, taskId: task.id, score: Number.isFinite(parsed.score) ? parsed.score : 0 };
+  return normalizeReviewOutput(parsed, task.id);
 }
 
 export async function integrateResults(
