@@ -1,6 +1,6 @@
 import { callAI, parseJsonWithFallback } from "./aiClient";
-import { coordinatorSystemPrompt, integratorSystemPrompt, plannerSystemPrompt, reviewerFixSystemPrompt, reviewerSystemPrompt, workerFixSystemPrompt, workerSystemPrompt } from "./prompts";
-import { AIConfig, FixBrief, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput, WorkerQuota, WorkerType } from "./types";
+import { coordinatorFixBriefSystemPrompt, coordinatorSystemPrompt, integratorSystemPrompt, plannerSystemPrompt, reviewerFixSystemPrompt, reviewerSystemPrompt, workerFixSystemPrompt, workerSystemPrompt } from "./prompts";
+import { AIConfig, CoordinatorDecision, FixBrief, IntegrationOutput, PlanTask, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput, WorkerQuota, WorkerType } from "./types";
 
 type ChangedFile = NonNullable<WorkerOutput["changedFiles"]>[number];
 
@@ -177,7 +177,7 @@ export async function createFixBrief(
   review: ReviewOutput,
 ): Promise<FixBrief> {
   const fallback: FixBrief = { taskId: task.id, attempt, rootCauses: ["Invalid JSON"], requiredChanges: [], forbiddenChanges: [], qualityChecklist: [], messageToWorker: "Retry with structured fixes." };
-  const raw = await callAI(config, coordinatorSystemPrompt, `Original requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nPrevious worker output:\n${JSON.stringify(previousWorkerOutput, null, 2)}\n\nReviewer output:\n${JSON.stringify(review, null, 2)}\n\nReturn strict JSON only.`);
+  const raw = await callAI(config, coordinatorFixBriefSystemPrompt, `Original requirement:\n${requirement}\n\nTask:\n${JSON.stringify(task, null, 2)}\n\nPrevious worker output:\n${JSON.stringify(previousWorkerOutput, null, 2)}\n\nReviewer output:\n${JSON.stringify(review, null, 2)}\n\nReturn strict JSON only.`);
   const parsed = parseJsonWithFallback(raw, fallback);
   return { ...fallback, ...parsed, taskId: task.id, attempt };
 }
@@ -210,6 +210,46 @@ export async function reviewFixTask(config: AIConfig, task: PlanTask, workerOutp
   return normalizeReviewOutput(parsed, task.id);
 }
 
+
+
+export async function runCoordinatorDecision(
+  config: AIConfig,
+  plan: ProjectPlan,
+  workerOutputs: Record<string, WorkerOutput>,
+  reviews: Record<string, ReviewOutput>,
+  taskAttempts: Record<string, TaskAttempt[]>,
+  settings: { workerRoleCounts: Record<string, number>; minimumReviewScore: number; maxReviewFixAttempts: number },
+): Promise<CoordinatorDecision> {
+  const fallback: CoordinatorDecision = { readyTaskIds: [], blockedTaskIds: [], retryTaskIds: [], stopReason: "", canIntegrate: false, notes: ["fallback"] };
+  const raw = await callAI(config, coordinatorSystemPrompt, `Plan:
+${JSON.stringify(plan, null, 2)}
+
+workerRoleCounts:
+${JSON.stringify(settings.workerRoleCounts, null, 2)}
+
+workerOutputs:
+${JSON.stringify(workerOutputs, null, 2)}
+
+reviews:
+${JSON.stringify(reviews, null, 2)}
+
+taskAttempts:
+${JSON.stringify(taskAttempts, null, 2)}
+
+settings:
+${JSON.stringify(settings, null, 2)}
+
+Return strict JSON only.`);
+  const parsed = parseJsonWithFallback<Partial<CoordinatorDecision>>(raw, fallback);
+  return {
+    readyTaskIds: Array.isArray(parsed.readyTaskIds) ? parsed.readyTaskIds.map(String) : [],
+    blockedTaskIds: Array.isArray(parsed.blockedTaskIds) ? parsed.blockedTaskIds.map(String) : [],
+    retryTaskIds: Array.isArray(parsed.retryTaskIds) ? parsed.retryTaskIds.map(String) : [],
+    stopReason: typeof parsed.stopReason === "string" ? parsed.stopReason : "",
+    canIntegrate: parsed.canIntegrate === true,
+    notes: Array.isArray(parsed.notes) ? parsed.notes.map(String) : [],
+  };
+}
 export async function integrateResults(
   config: AIConfig,
   plan: ProjectPlan,

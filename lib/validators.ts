@@ -191,3 +191,21 @@ export function validateExportRequest(body: unknown): ValidationResult<unknown> 
   if (!Array.isArray(body.reviews)) return invalid("reviews must be an array");
   return { ok: true, data: body };
 }
+
+
+export function validateCoordinatorDecisionRequest(body: unknown): ValidationResult<{ config: AIConfig; plan: ProjectPlan; workerOutputs: Record<string, WorkerOutput>; reviews: Record<string, ReviewOutput>; taskAttempts: Record<string, unknown[]>; settings: { workerRoleCounts: Record<string, number>; minimumReviewScore: number; maxReviewFixAttempts: number } }> {
+  if (!isObject(body)) return invalid("request body must be an object");
+  const config = validateAIConfig(body.config); if (!config.ok) return config;
+  if (!isObject(body.plan)) return invalid("plan must be an object");
+  const plan = body.plan as ProjectPlan;
+  if (!isNonEmptyString(plan.projectName) || typeof plan.summary !== "string" || !Array.isArray(plan.tasks)) return invalid("plan fields are invalid");
+  if (!isObject(body.workerOutputs)) return invalid("workerOutputs must be an object");
+  if (!isObject(body.reviews)) return invalid("reviews must be an object");
+  if (!isObject(body.taskAttempts)) return invalid("taskAttempts must be an object");
+  if (!isObject(body.settings)) return invalid("settings must be an object");
+  const settings = body.settings as Record<string, unknown>;
+  if (!isObject(settings.workerRoleCounts)) return invalid("settings.workerRoleCounts must be an object");
+  if (typeof settings.minimumReviewScore !== "number") return invalid("settings.minimumReviewScore must be a number");
+  if (typeof settings.maxReviewFixAttempts !== "number") return invalid("settings.maxReviewFixAttempts must be a number");
+  return { ok: true, data: { config: config.data, plan, workerOutputs: body.workerOutputs as Record<string, WorkerOutput>, reviews: body.reviews as Record<string, ReviewOutput>, taskAttempts: body.taskAttempts as Record<string, unknown[]>, settings: { workerRoleCounts: settings.workerRoleCounts as Record<string, number>, minimumReviewScore: settings.minimumReviewScore as number, maxReviewFixAttempts: settings.maxReviewFixAttempts as number } } };
+}

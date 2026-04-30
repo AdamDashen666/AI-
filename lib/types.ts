@@ -62,6 +62,15 @@ export interface TaskAttempt {
   passed: boolean;
 }
 
+export interface CoordinatorDecision {
+  readyTaskIds: string[];
+  blockedTaskIds: string[];
+  retryTaskIds: string[];
+  stopReason: string;
+  canIntegrate: boolean;
+  notes: string[];
+}
+
 export type AgentRole = "worker" | "reviewer" | "coordinator" | "user" | "system";
 
 export interface CommunicationLogEntry {
