@@ -25,8 +25,10 @@ export class AIClientError extends Error {
   }
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+export const AI_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = AI_REQUEST_TIMEOUT_MS;
 const DEFAULT_RETRY_COUNT = 2;
+const RETRY_DELAYS_MS = [1000, 3000];
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -84,7 +86,7 @@ export async function callAI(config: AIConfig, systemPrompt: string, userPrompt:
         }
         lastError = error;
         if (attempt < retryCount) {
-          await sleep(300 * 2 ** attempt);
+          await sleep(RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1] ?? 3000);
           continue;
         }
         throw error;
@@ -109,7 +111,7 @@ export async function callAI(config: AIConfig, systemPrompt: string, userPrompt:
       const retryable = normalized.type === "timeout" || normalized.type === "network" || (normalized.type === "upstream_http" && ((normalized.statusCode || 0) === 429 || (normalized.statusCode || 0) >= 500));
       lastError = normalized;
       if (retryable && attempt < retryCount) {
-        await sleep(300 * 2 ** attempt);
+        await sleep(RETRY_DELAYS_MS[attempt] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1] ?? 3000);
         continue;
       }
       throw new Error(formatErrorForDisplay(normalized));

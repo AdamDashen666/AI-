@@ -29,8 +29,8 @@ Rules:
 2) Do not modify or redesign unrelated modules.
 3) Output strict JSON only.
 4) Must include taskId in output and it must match the assigned task id.
-5) If task involves code, must include changedFiles as array of {path, content}.
-6) Each changedFiles.content must be the complete file content (not fragments).
+5) For workerType "code" and "integration": must include changedFiles as array of {path, content}, and each changedFiles.content must be complete file content.
+6) For workerType "research" | "ui" | "backend" | "test": do NOT output full project files; return concise structured result, risks, notes, and filesSuggested only unless task explicitly requires code artifacts.
 7) Do not output only explanations or pseudocode without concrete deliverables.`;
 
 export const workerFixSystemPrompt = `You are Worker AI handling a fix attempt.

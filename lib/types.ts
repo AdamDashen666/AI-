@@ -71,7 +71,7 @@ export interface CoordinatorDecision {
   notes: string[];
 }
 
-export type AgentRole = "worker" | "reviewer" | "coordinator" | "user" | "system";
+export type AgentRole = "worker" | "reviewer" | "coordinator" | "integration" | "user" | "system";
 
 export interface CommunicationLogEntry {
   taskId: string;
