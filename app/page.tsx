@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { AIConfig, CommunicationLogEntry, FixBrief, IntegrationOutput, ProjectPlan, ReviewOutput, TaskAttempt, WorkerOutput } from "@/lib/types";
-import { getIntegrationBlockers } from "@/lib/workflow";
+import { getIntegrationBlockers, isReviewPassed } from "@/lib/workflow";
 
 type TaskStatus = "idle" | "waiting_dependencies" | "done" | "passed" | "failed" | "blocked";
 type ProgressPhase = "idle" | "planning" | "planned" | "running" | "integrating" | "done" | "failed" | "blocked";
@@ -64,10 +64,10 @@ export default function HomePage() {
     plan?.tasks.forEach((t) => {
       const taskKey = normalizeTaskKey(t.id);
       const dependencies = Array.isArray(t.dependencies) ? t.dependencies.map((dep) => normalizeTaskKey(dep)) : [];
-      if (dependencies.length > 0 && dependencies.some((dep) => reviews[dep] && !reviews[dep]?.passed)) {
+      if (dependencies.length > 0 && dependencies.some((dep) => !isReviewPassed(reviews[dep], minimumReviewScore))) {
         map[taskKey] = "blocked";
       } else if (reviews[taskKey]) {
-        map[taskKey] = reviews[taskKey].passed ? "passed" : "failed";
+        map[taskKey] = isReviewPassed(reviews[taskKey], minimumReviewScore) ? "passed" : "failed";
       } else if (workerOutputs[taskKey]) {
         map[taskKey] = "done";
       } else if (dependencies.length > 0 && dependencies.some((dep) => !reviewedTaskIds.has(dep))) {
@@ -77,7 +77,7 @@ export default function HomePage() {
       }
     });
     return map;
-  }, [plan, workerOutputs, reviews, taskAttempts]);
+  }, [plan, workerOutputs, reviews, taskAttempts, minimumReviewScore]);
 
   const progressPercent = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
   const missingTasks = useMemo(() => {
@@ -178,7 +178,15 @@ export default function HomePage() {
         const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: latestFixBrief }) });
         const reviewData: { review?: ReviewOutput; error?: string } = await reviewResp.json().catch(() => ({}));
         if (!reviewResp.ok || !reviewData.review) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
-        currentReview = reviewData.review;
+        currentReview = {
+          ...reviewData.review,
+          score: Number.isFinite(reviewData.review.score) ? Number(reviewData.review.score) : 0,
+          issues: Array.isArray(reviewData.review.issues) ? reviewData.review.issues : [],
+          suggestions: Array.isArray(reviewData.review.suggestions) ? reviewData.review.suggestions : [],
+        };
+        if (typeof currentReview.passed !== "boolean") {
+          currentReview.passed = currentReview.score >= minimumReviewScore;
+        }
 
         const passedByScore = Number(currentReview.score) >= minimumReviewScore;
         if (!passedByScore) {
@@ -189,8 +197,8 @@ export default function HomePage() {
             suggestions: [...(currentReview.suggestions || []), "请针对问题逐条修复，并提高正确性、完整性和可维护性。"],
           };
         }
-        const hasBlockingIssues = Array.isArray(currentReview.issues) && currentReview.issues.length > 0;
-        const isPassed = Boolean(currentReview?.passed) && passedByScore && !hasBlockingIssues;
+        const isPassed = isReviewPassed(currentReview, minimumReviewScore);
+        currentReview = { ...currentReview, passed: isPassed };
         appendCommunicationLog({ taskId: taskKey, attempt, from: "reviewer", to: isPassed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
 
         appendLog("info", `任务 ${taskKey} attempt ${attempt} 评审分数 ${Number(currentReview.score)}，阈值 ${minimumReviewScore}，通过=${isPassed}`);
@@ -332,7 +340,7 @@ export default function HomePage() {
           const task = taskMap.get(nextTaskId);
           if (!task) throw new Error(`任务不存在：${nextTaskId}`);
           const deps = dependencyMap.get(nextTaskId) || [];
-          const invalidDeps = deps.filter((dep) => !reviewStore[dep]?.passed);
+          const invalidDeps = deps.filter((dep) => !isReviewPassed(reviewStore[dep], minimumReviewScore));
           if (invalidDeps.length > 0) {
             const blockedReview: ReviewOutput = {
               taskId: nextTaskId,
@@ -364,7 +372,7 @@ export default function HomePage() {
           markTaskCompleted(nextTaskId);
           allAttempts.push(...attempts);
           const latestReview = attempts[attempts.length - 1]?.review;
-          setProgress((prev) => ({ ...prev, done: prev.done + (latestReview?.passed ? 1 : 0) }));
+          setProgress((prev) => ({ ...prev, done: prev.done + (isReviewPassed(latestReview, minimumReviewScore) ? 1 : 0) }));
         }
       });
       await Promise.all(workers);
