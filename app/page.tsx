@@ -511,7 +511,7 @@ export default function HomePage() {
       <div className="status">状态：{loading || "idle"}</div>
       <div className="status">进度：{progressPercent}%（{progress.done}/{progress.total}，{progress.phase}）</div>
       <progress value={progress.done} max={Math.max(progress.total, 1)} style={{ width: "100%", height: 12 }} />
-      {errorMessage ? <div className="status" style={{ color: "#b00020" }}>错误：{getFriendlyErrorMessage(errorMessage)}</div> : null}
+      {errorMessage ? <div className="error-area"><strong>错误信息</strong><div>{getFriendlyErrorMessage(errorMessage)}</div></div> : null}
     </div>
     <div className="panel grid">
       <h3>项目计划</h3>
@@ -540,8 +540,9 @@ export default function HomePage() {
       <pre>{JSON.stringify(reviews, null, 2)}</pre>
       <h3>最终合并结果</h3>
       {missingTasks.length > 0 ? (
-        <div className="status" style={{ color: "#b00020" }}>
-          缺失任务输出/评审：{missingTasks.join(", ")}
+        <div className="error-area">
+          <strong>错误信息</strong>
+          <div>缺失任务输出/评审：{missingTasks.join(", ")}</div>
         </div>
       ) : null}
       <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
