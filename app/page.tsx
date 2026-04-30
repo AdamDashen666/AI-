@@ -64,13 +64,15 @@ export default function HomePage() {
     plan?.tasks.forEach((t) => {
       const taskKey = normalizeTaskKey(t.id);
       const dependencies = Array.isArray(t.dependencies) ? t.dependencies.map((dep) => normalizeTaskKey(dep)) : [];
-      if (dependencies.length > 0 && dependencies.some((dep) => !isReviewPassed(reviews[dep], minimumReviewScore))) {
+      const missingDeps = dependencies.some((dep) => !reviewedTaskIds.has(dep));
+      const failedDeps = dependencies.some((dep) => reviews[dep] && !isReviewPassed(reviews[dep], minimumReviewScore));
+      if (failedDeps) {
         map[taskKey] = "blocked";
       } else if (reviews[taskKey]) {
         map[taskKey] = isReviewPassed(reviews[taskKey], minimumReviewScore) ? "passed" : "failed";
       } else if (workerOutputs[taskKey]) {
         map[taskKey] = "done";
-      } else if (dependencies.length > 0 && dependencies.some((dep) => !reviewedTaskIds.has(dep))) {
+      } else if (missingDeps) {
         map[taskKey] = "waiting_dependencies";
       } else {
         map[taskKey] = "idle";
@@ -180,7 +182,7 @@ export default function HomePage() {
         if (!reviewResp.ok || !reviewData.review) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
         currentReview = {
           ...reviewData.review,
-          score: Number.isFinite(reviewData.review.score) ? Number(reviewData.review.score) : 0,
+          score: (() => { const rawScore = Number(reviewData.review.score); return Number.isFinite(rawScore) ? rawScore : 0; })(),
           issues: Array.isArray(reviewData.review.issues) ? reviewData.review.issues : [],
           suggestions: Array.isArray(reviewData.review.suggestions) ? reviewData.review.suggestions : [],
         };

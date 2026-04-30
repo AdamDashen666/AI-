@@ -110,11 +110,18 @@ export { migrateLegacyWorkerOutput };
 
 export function isReviewPassed(review: Partial<ReviewOutput> | null | undefined, minimumReviewScore: number): boolean {
   if (!review) return false;
-  return review.passed === true || (typeof review.score === "number" && review.score >= minimumReviewScore);
+
+  const score = Number(review.score);
+  if (Number.isFinite(score)) {
+    return score >= minimumReviewScore;
+  }
+
+  return review.passed === true;
 }
 
 function normalizeReviewOutput(parsed: Partial<ReviewOutput>, taskId: string, minimumReviewScore = 80): ReviewOutput {
-  const score = Number.isFinite(parsed.score) ? Number(parsed.score) : 0;
+  const rawScore = Number(parsed.score);
+  const score = Number.isFinite(rawScore) ? rawScore : 0;
   const passed = parsed.passed === true || score >= minimumReviewScore;
   return {
     taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : taskId,

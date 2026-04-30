@@ -52,3 +52,18 @@ test('score threshold can pass even if passed flag is missing', () => {
   );
   assert.deepEqual(blockers, []);
 });
+
+test('passed true cannot override low score', () => {
+  assert.equal(
+    isReviewPassed({ taskId: 'task_low', passed: true, score: 70, issues: [], suggestions: [] }, 90),
+    false,
+  );
+});
+
+test('string score is normalized correctly', () => {
+  assert.equal(
+    isReviewPassed({ taskId: 'task_string', score: '100', issues: [], suggestions: [] }, 90),
+    true,
+  );
+});
+
