@@ -122,7 +122,7 @@ export function isReviewPassed(review: Partial<ReviewOutput> | null | undefined,
 function normalizeReviewOutput(parsed: Partial<ReviewOutput>, taskId: string, minimumReviewScore = 80): ReviewOutput {
   const rawScore = Number(parsed.score);
   const score = Number.isFinite(rawScore) ? rawScore : 0;
-  const passed = parsed.passed === true || score >= minimumReviewScore;
+  const passed = isReviewPassed({ ...parsed, score }, minimumReviewScore);
   return {
     taskId: typeof parsed.taskId === "string" && parsed.taskId.trim() ? parsed.taskId : taskId,
     passed,
