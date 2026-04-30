@@ -10,6 +10,8 @@ type ExportFormat = "md" | "json" | "txt" | "zip";
 type AppLogLevel = "info" | "warn" | "error";
 type AppLogEntry = { timestamp: string; level: AppLogLevel; message: string; detail?: unknown };
 type WorkflowErrorDetail = { stage: "parseWorkerOutput" | "validateSchema" | "startTask" | "reviewTask" | "finalAssembly"; taskId: string; attempt: number; schemaName: string; rawValue: string; errorMessage: string; stack: string };
+type AutoMatchComplexity = "simple" | "medium" | "complex";
+type AutoMatchResult = { complexity: AutoMatchComplexity; workerRoleCounts: Record<string, number>; maxConcurrentWorkers: number; maxTasks: number; reason: string };
 
 function getFriendlyErrorMessage(rawMessage: string): string {
   const match = rawMessage.match(/^\[(timeout|upstream_http|parse_error|network|unknown)\]\s*(.*)$/);
@@ -43,16 +45,18 @@ export default function HomePage() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [models, setModels] = useState<string[]>([]);
   const [modelStatus, setModelStatus] = useState<string>("");
-  const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<number>(2);
+  const [maxConcurrentWorkers, setMaxConcurrentWorkers] = useState<number>(1);
   const [minimumReviewScore, setMinimumReviewScore] = useState<number>(80);
   const [workerRoleCounts, setWorkerRoleCounts] = useState<Record<string, number>>({
     ui: 1,
-    backend: 1,
-    research: 1,
+    backend: 0,
+    research: 0,
     code: 1,
     test: 1,
     integration: 1,
   });
+  const [autoMatchWorkerCounts, setAutoMatchWorkerCounts] = useState<boolean>(true);
+  const [autoMatchSummary, setAutoMatchSummary] = useState<string>("");
   const [useCustomWorkerModel, setUseCustomWorkerModel] = useState<boolean>(false);
   const [customWorkerModel, setCustomWorkerModel] = useState<string>("");
   const [progress, setProgress] = useState<{ total: number; done: number; phase: ProgressPhase }>({ total: 0, done: 0, phase: "idle" });
@@ -97,6 +101,20 @@ export default function HomePage() {
 
   function appendCommunicationLog(entry: CommunicationLogEntry) {
     setCommunicationLog((prev) => [...prev, entry]);
+  }
+
+  function analyzeComplexity(req: string): AutoMatchResult {
+    const normalized = req.toLowerCase();
+    const lengthScore = req.length;
+    const keywordHits = ["backend", "database", "login", "api", "auth", "upload", "payment", "admin", "dashboard", "agent", "workflow", "deploy", "deployment", "test", "documentation", "full stack", "fullstack"].filter((k) => normalized.includes(k));
+    const strongHits = ["database", "payment", "admin", "agent", "workflow", "multi", "permission", "auth"].filter((k) => normalized.includes(k)).length;
+    let complexity: AutoMatchComplexity = "simple";
+    if (lengthScore > 800 || keywordHits.length >= 6 || strongHits >= 3) complexity = "complex";
+    else if (lengthScore > 250 || keywordHits.length >= 2) complexity = "medium";
+
+    if (complexity === "simple") return { complexity, workerRoleCounts: { ui: 1, backend: 0, research: 0, code: 1, test: 1, integration: 1 }, maxConcurrentWorkers: 1, maxTasks: 4, reason: `需求较短，关键词较少（${keywordHits.join(", ") || "无"}）。` };
+    if (complexity === "medium") return { complexity, workerRoleCounts: { ui: 1, backend: 1, research: 1, code: 2, test: 1, integration: 1 }, maxConcurrentWorkers: 2, maxTasks: 6, reason: `检测到中等复杂度关键词：${keywordHits.join(", ") || "无"}。` };
+    return { complexity, workerRoleCounts: { ui: 2, backend: 2, research: 1, code: 3, test: 2, integration: 1 }, maxConcurrentWorkers: 3, maxTasks: 10, reason: `检测到高复杂度需求，关键词：${keywordHits.join(", ") || "无"}。` };
   }
 
   function downloadDiagnosticLog() {
@@ -247,6 +265,12 @@ export default function HomePage() {
         attempts.push(attemptItem);
         appendCommunicationLog({ taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> });
         appendCommunicationLog({ taskId: taskKey, attempt, from: "reviewer", to: attempt < maxReviewFixAttempts ? "coordinator" : "worker", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
+        const isTimeoutLike = /\[(timeout|network|upstream_http)\]/.test(message) || /timed out/i.test(message);
+        if (isTimeoutLike) {
+          const willRetry = attempt < maxReviewFixAttempts;
+          appendLog(willRetry ? "warn" : "error", `任务 ${taskKey} AI 请求异常（可重试）`, { taskId: taskKey, attempt, retryIndex: attempt - 1, timeoutMs: 120000, willRetry, message });
+          appendCommunicationLog({ taskId: taskKey, attempt, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { event: "ai_request_retry", taskId: taskKey, attempt, retryIndex: attempt - 1, timeoutMs: 120000, willRetry, error: message } });
+        }
         appendLog("error", `任务 ${taskKey} attempt ${attempt} 失败`, {
           stage: message.includes("评审") ? "reviewTask" : "startTask",
           taskId: taskKey,
@@ -285,11 +309,12 @@ export default function HomePage() {
   async function executeTasksAndIntegrate(currentPlan: ProjectPlan) {
     setLoading("running tasks");
     const activeConfig = useCustomWorkerModel && customWorkerModel.trim() ? { ...config, model: customWorkerModel.trim() } : config;
-    const concurrency = Math.max(1, Math.floor(maxConcurrentWorkers));
+    const concurrency = Math.max(1, Math.floor((currentPlan as ProjectPlan & { __effectiveMaxConcurrentWorkers?: number }).__effectiveMaxConcurrentWorkers ?? maxConcurrentWorkers));
     const selectedTasks = currentPlan.tasks;
     const outputStore: Record<string, WorkerOutput> = {};
     const reviewStore: Record<string, ReviewOutput> = {};
     const allAttempts: TaskAttempt[] = [];
+    const maxReviewFixAttempts = 3;
     setProgress({ total: selectedTasks.length + 1, done: 0, phase: "running" });
 
     try {
@@ -438,7 +463,23 @@ export default function HomePage() {
     setErrorMessage("");
     setProgress({ total: 1, done: 0, phase: "planning" });
     try {
-      const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement, workerQuotas: workerRoleCounts }) });
+      const autoMatch = analyzeComplexity(requirement);
+      const effectiveWorkerRoleCounts = autoMatchWorkerCounts ? autoMatch.workerRoleCounts : workerRoleCounts;
+      const effectiveMaxConcurrentWorkers = autoMatchWorkerCounts ? autoMatch.maxConcurrentWorkers : Math.max(1, Math.floor(maxConcurrentWorkers));
+      const effectiveMaxTasks = autoMatchWorkerCounts ? autoMatch.maxTasks : 5;
+      if (autoMatchWorkerCounts) {
+        setWorkerRoleCounts(effectiveWorkerRoleCounts);
+        setMaxConcurrentWorkers(effectiveMaxConcurrentWorkers);
+        const allocated = Object.values(effectiveWorkerRoleCounts).reduce((sum, n) => sum + Number(n || 0), 0);
+        const summary = `自动匹配：检测为 ${autoMatch.complexity}，已分配 ${allocated} 个 AI，最大并发 ${effectiveMaxConcurrentWorkers}。`;
+        setAutoMatchSummary(summary);
+        appendLog("info", "自动匹配 AI 数量", { complexity: autoMatch.complexity, recommendedWorkerRoleCounts: effectiveWorkerRoleCounts, recommendedMaxConcurrentWorkers: effectiveMaxConcurrentWorkers, reason: autoMatch.reason });
+        appendCommunicationLog({ taskId: "plan", attempt: 1, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { event: "auto_match_worker_counts", complexity: autoMatch.complexity, workerRoleCounts: effectiveWorkerRoleCounts, maxConcurrentWorkers: effectiveMaxConcurrentWorkers } });
+      } else {
+        setAutoMatchSummary("");
+      }
+
+      const r = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config, requirement, maxTasks: effectiveMaxTasks, workerQuotas: effectiveWorkerRoleCounts }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || `计划生成失败: ${r.status}`);
       if (!d.plan?.tasks?.length) throw new Error("计划生成失败：任务列表为空");
@@ -453,7 +494,7 @@ export default function HomePage() {
       setIntegration(null);
       setProgress({ total: 1, done: 1, phase: "planned" });
 
-      await executeTasksAndIntegrate(d.plan);
+      await executeTasksAndIntegrate({ ...d.plan, __effectiveMaxConcurrentWorkers: effectiveMaxConcurrentWorkers } as ProjectPlan);
       appendLog("info", "工作流执行完成");
     } catch (error) {
       setErrorMessage((error as Error).message);
@@ -512,9 +553,14 @@ export default function HomePage() {
       <div className="status">模型状态：{modelStatus || "idle"}</div>
 
       <textarea rows={8} placeholder="输入你的项目需求..." value={requirement} onChange={(e) => setRequirement(e.target.value)} />
+      <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+        <input type="checkbox" checked={autoMatchWorkerCounts} onChange={(e) => setAutoMatchWorkerCounts(e.target.checked)} style={{ width: 16, marginBottom: 0 }} />
+        自动匹配 AI 数量
+      </label>
+      {autoMatchSummary ? <div className="status">{autoMatchSummary}</div> : null}
       <label>
         最多同时运行 worker 数量：
-        <input type="number" min={1} value={maxConcurrentWorkers} onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value) || 1)} />
+        <input type="number" min={1} value={maxConcurrentWorkers} readOnly={autoMatchWorkerCounts} onChange={(e) => setMaxConcurrentWorkers(Number(e.target.value) || 1)} />
       </label>
       <label>
         最低评审分数（低于该分数将要求重做）：
@@ -529,6 +575,7 @@ export default function HomePage() {
               type="number"
               min={0}
               value={workerRoleCounts[role]}
+              readOnly={autoMatchWorkerCounts}
               onChange={(e) => setWorkerRoleCounts((prev) => ({ ...prev, [role]: Math.max(0, Number(e.target.value) || 0) }))}
             />
           </label>
