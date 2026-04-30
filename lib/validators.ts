@@ -35,11 +35,13 @@ function isValidHttpUrl(value: string): boolean {
 
 function validateAIConfig(value: unknown): ValidationResult<AIConfig> {
   if (!isObject(value)) return invalid("config must be an object");
-  const { baseURL, apiKey, model } = value;
+  const { baseURL, apiKey, model, timeoutMs, retryCount } = value;
   if (!isNonEmptyString(baseURL) || !isValidHttpUrl(baseURL)) return invalid("config.baseURL must be a valid http/https URL");
   if (!isNonEmptyString(apiKey)) return invalid("config.apiKey must be a non-empty string");
   if (!isNonEmptyString(model)) return invalid("config.model must be a non-empty string");
-  return { ok: true, data: { baseURL, apiKey, model } };
+  if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || Number.isNaN(timeoutMs) || timeoutMs < 1)) return invalid("config.timeoutMs must be a number >= 1");
+  if (retryCount !== undefined && (typeof retryCount !== "number" || Number.isNaN(retryCount) || retryCount < 0)) return invalid("config.retryCount must be a number >= 0");
+  return { ok: true, data: { baseURL, apiKey, model, timeoutMs: timeoutMs as number | undefined, retryCount: retryCount as number | undefined } };
 }
 
 function validatePlanTask(value: unknown, path: string): ValidationResult<PlanTask> {
