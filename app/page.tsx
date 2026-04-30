@@ -149,13 +149,16 @@ export default function HomePage() {
     const attempts: TaskAttempt[] = [];
     let currentOutput: WorkerOutput | null = null;
     let currentReview: ReviewOutput | null = null;
-    try {
-      for (let attempt = 1; attempt <= maxReviewFixAttempts; attempt += 1) {
+    let latestFixBrief: FixBrief | undefined;
+
+    for (let attempt = 1; attempt <= maxReviewFixAttempts; attempt += 1) {
+      try {
+        appendLog("info", `任务 ${taskKey} 开始 attempt ${attempt}/${maxReviewFixAttempts}`);
         const previousOutputPayload = attempt > 1
           ? normalizePreviousOutput(currentOutput)
           : {};
         const dependencyOutputsPayload = normalizePreviousOutput(dependencyOutputMap);
-        appendCommunicationLog({ taskId: taskKey, attempt, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { previousOutput: previousOutputPayload, dependencyOutputs: dependencyOutputsPayload } });
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "system", to: "worker", timestamp: new Date().toISOString(), payload: { previousOutput: previousOutputPayload, dependencyOutputs: dependencyOutputsPayload, previousReview: attempt > 1 ? currentReview : undefined, fixBrief: attempt > 1 ? latestFixBrief : undefined } });
         const runTaskBody = {
           config: activeConfig,
           task,
@@ -164,30 +167,20 @@ export default function HomePage() {
           dependencyOutputs: dependencyOutputsPayload,
           previousOutput: previousOutputPayload,
           ...(attempt > 1 && currentReview ? { previousReview: currentReview } : {}),
-          ...(attempt > 1 && attempts[attempts.length - 1]?.fixBrief ? { fixBrief: attempts[attempts.length - 1].fixBrief } : {}),
+          ...(attempt > 1 && latestFixBrief ? { fixBrief: latestFixBrief } : {}),
         };
         const runResp: Response = await fetch("/api/run-task", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(runTaskBody) });
         const runData: { output?: WorkerOutput; error?: string } = await runResp.json().catch(() => ({}));
         if (!runResp.ok || !runData.output) throw new Error(runData.error || `任务执行失败: ${runResp.status}`);
         currentOutput = runData.output;
-        if (attempt > 1) {
-          appendLog("info", `任务 ${taskKey} 修复轮 ${attempt} 输出`, {
-            fixedIssues: currentOutput.fixedIssues || [],
-            remainingRisks: currentOutput.remainingRisks || [],
-            changedFiles: currentOutput.changedFiles || [],
-          });
-        }
         appendCommunicationLog({ taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> });
 
-        const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: attempts[attempts.length - 1]?.fixBrief }) });
+        const reviewResp: Response = await fetch("/api/review", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, task, output: currentOutput, fixBrief: latestFixBrief }) });
         const reviewData: { review?: ReviewOutput; error?: string } = await reviewResp.json().catch(() => ({}));
         if (!reviewResp.ok || !reviewData.review) throw new Error(reviewData.error || `评审失败: ${reviewResp.status}`);
         currentReview = reviewData.review;
-        appendCommunicationLog({ taskId: taskKey, attempt, from: "reviewer", to: currentReview?.passed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
 
         const passedByScore = Number(currentReview.score) >= minimumReviewScore;
-        const hasBlockingIssues = Array.isArray(currentReview.issues) && currentReview.issues.length > 0;
-        const isPassed = Boolean(currentReview?.passed) && passedByScore && !hasBlockingIssues;
         if (!passedByScore) {
           currentReview = {
             ...currentReview,
@@ -196,53 +189,77 @@ export default function HomePage() {
             suggestions: [...(currentReview.suggestions || []), "请针对问题逐条修复，并提高正确性、完整性和可维护性。"],
           };
         }
+        const hasBlockingIssues = Array.isArray(currentReview.issues) && currentReview.issues.length > 0;
+        const isPassed = Boolean(currentReview?.passed) && passedByScore && !hasBlockingIssues;
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "reviewer", to: isPassed ? "worker" : "coordinator", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
+
+        appendLog("info", `任务 ${taskKey} attempt ${attempt} 评审分数 ${Number(currentReview.score)}，阈值 ${minimumReviewScore}，通过=${isPassed}`);
         const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: isPassed };
         if (isPassed) {
-          appendLog("info", `任务 ${taskKey} 在第 ${attempt} 轮评审通过`);
           attempts.push(attemptItem);
+          appendLog("info", `任务 ${taskKey} 在 attempt ${attempt} 评审通过`);
           break;
         }
+
+        if (attempt >= maxReviewFixAttempts) {
+          attempts.push(attemptItem);
+          appendLog("error", `任务 ${taskKey} 已达到最大重试次数 ${maxReviewFixAttempts}，标记失败`);
+          break;
+        }
+
         const coordinatorResp = await fetch("/api/fix-brief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, requirement, task, attempt, previousOutput: currentOutput, review: currentReview }) });
         const coordinatorData = await coordinatorResp.json().catch(() => ({}));
         if (!coordinatorResp.ok || !coordinatorData.fixBrief) throw new Error(coordinatorData.error || `协调失败: ${coordinatorResp.status}`);
-        const fixBrief: FixBrief = coordinatorData.fixBrief;
-        attemptItem.fixBrief = fixBrief;
-        appendCommunicationLog({ taskId: taskKey, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: fixBrief as unknown as Record<string, unknown> });
+        latestFixBrief = coordinatorData.fixBrief as FixBrief;
+        attemptItem.fixBrief = latestFixBrief;
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: latestFixBrief as unknown as Record<string, unknown> });
         attempts.push(attemptItem);
+      } catch (error) {
+        const message = (error as Error).message || "未知错误";
+        currentOutput = {
+          taskId: taskKey,
+          result: `任务失败：${message}`,
+          filesSuggested: currentOutput?.filesSuggested || [],
+          risks: [...(currentOutput?.risks || []), message],
+          notes: `Attempt ${attempt} 失败，将进入重试流程。`,
+          fixedIssues: currentOutput?.fixedIssues || [],
+          remainingRisks: [...(currentOutput?.remainingRisks || []), message],
+          changedFiles: currentOutput?.changedFiles || [],
+        };
+        currentReview = {
+          taskId: taskKey,
+          passed: false,
+          issues: [...(currentReview?.issues || []), message],
+          suggestions: [...(currentReview?.suggestions || []), "请根据失败原因修复后重试，特别关注超时与输出格式。"],
+          score: Number(currentReview?.score ?? 0),
+        };
+        const attemptItem: TaskAttempt = { attempt, workerOutput: currentOutput, review: currentReview, passed: false };
+        attempts.push(attemptItem);
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> });
+        appendCommunicationLog({ taskId: taskKey, attempt, from: "reviewer", to: attempt < maxReviewFixAttempts ? "coordinator" : "worker", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
+        appendLog("error", `任务 ${taskKey} attempt ${attempt} 失败`, {
+          stage: message.includes("评审") ? "reviewTask" : "startTask",
+          taskId: taskKey,
+          attempt,
+          schemaName: "WorkerOutput/ReviewOutput",
+          rawValue: message,
+          errorMessage: message,
+          stack: (error as Error).stack || "",
+        });
+
+        if (attempt >= maxReviewFixAttempts) {
+          appendLog("error", `任务 ${taskKey} 在 ${maxReviewFixAttempts} 次尝试后仍失败`);
+          break;
+        }
+
+        const coordinatorResp = await fetch("/api/fix-brief", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ config: activeConfig, requirement, task, attempt, previousOutput: currentOutput, review: currentReview }) });
+        const coordinatorData = await coordinatorResp.json().catch(() => ({}));
+        if (coordinatorResp.ok && coordinatorData.fixBrief) {
+          latestFixBrief = coordinatorData.fixBrief as FixBrief;
+          attempts[attempts.length - 1].fixBrief = latestFixBrief;
+          appendCommunicationLog({ taskId: taskKey, attempt, from: "coordinator", to: "worker", timestamp: new Date().toISOString(), payload: latestFixBrief as unknown as Record<string, unknown> });
+        }
       }
-    } catch (error) {
-      const message = (error as Error).message || "未知错误";
-      const detail: WorkflowErrorDetail = {
-        stage: message.includes("评审") ? "reviewTask" : "startTask",
-        taskId: taskKey,
-        attempt: attempts.length + 1,
-        schemaName: "WorkerOutput/ReviewOutput",
-        rawValue: message,
-        errorMessage: message,
-        stack: (error as Error).stack || "",
-      };
-      currentOutput = currentOutput ?? {
-        taskId: taskKey,
-        result: `任务失败：${message}`,
-        filesSuggested: [],
-        risks: [message],
-        notes: "Worker 执行失败，已生成兜底输出以避免流程卡住。",
-        fixedIssues: [],
-        remainingRisks: [message],
-        changedFiles: [],
-      };
-      currentReview = currentReview ?? {
-        taskId: taskKey,
-        passed: false,
-        issues: [message],
-        suggestions: ["检查 API 配置、模型可用性与返回 JSON 格式后重试。"],
-        score: 0,
-      };
-      attempts.push({ attempt: attempts.length + 1, workerOutput: currentOutput, review: currentReview, passed: false });
-      appendCommunicationLog({ taskId: taskKey, attempt: attempts.length, from: "worker", to: "reviewer", timestamp: new Date().toISOString(), payload: currentOutput as unknown as Record<string, unknown> });
-      appendCommunicationLog({ taskId: taskKey, attempt: attempts.length, from: "reviewer", to: "worker", timestamp: new Date().toISOString(), payload: currentReview as unknown as Record<string, unknown> });
-      setErrorMessage((prev) => (prev ? `${prev}\n${task.id}: ${message}` : `${task.id}: ${message}`));
-      appendLog("error", `任务 ${taskKey} 执行失败`, detail);
     }
 
     if (!currentOutput || !currentReview) throw new Error(`任务 ${taskKey} 没有产生有效结果`);
@@ -253,6 +270,7 @@ export default function HomePage() {
     setTaskAttempts((prev) => ({ ...prev, [taskKey]: attempts }));
     return attempts;
   }
+
 
   async function executeTasksAndIntegrate(currentPlan: ProjectPlan) {
     setLoading("running tasks");
