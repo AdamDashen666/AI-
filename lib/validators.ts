@@ -16,6 +16,12 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+const ALLOWED_WORKER_TYPES = ["ui", "backend", "research", "code", "test", "integration"] as const;
+
+function isAllowedWorkerType(value: unknown): value is PlanTask["workerType"] {
+  return typeof value === "string" && (ALLOWED_WORKER_TYPES as readonly string[]).includes(value);
+}
+
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
@@ -50,7 +56,7 @@ function validatePlanTask(value: unknown, path: string): ValidationResult<PlanTa
   if (!isNonEmptyString(id)) return invalid(`${path}.id must be a non-empty string`);
   if (!isNonEmptyString(name)) return invalid(`${path}.name must be a non-empty string`);
   if (typeof description !== "string") return invalid(`${path}.description must be a string`);
-  if (!isNonEmptyString(workerType)) return invalid(`${path}.workerType must be a non-empty string`);
+  if (!isAllowedWorkerType(workerType)) return invalid(`${path}.workerType must be one of: ${ALLOWED_WORKER_TYPES.join(" | ")}`);
   if (!isStringArray(dependencies)) return invalid(`${path}.dependencies must be a string[]`);
   return { ok: true, data: { id, name, description, workerType: workerType as PlanTask["workerType"], dependencies } };
 }
